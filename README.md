@@ -31,15 +31,6 @@ requires Rust stable 1.8 or greater.
   * `x86_64-pc-windows-gnu`
   * `i686-pc-windows-gnu`
 
-## Benchmarks
-
-Simple benchmarks are provided for the methods provided. Many of these
-benchmarks use files in a temporary directory. On many modern Linux distros the
-default temporary directory, `/tmp`, is mounted on a tempfs filesystem, which
-will have different performance characteristics than a disk-backed filesystem.
-The temporary directory is configurable at runtime through the environment (see
-[`env::temp_dir`](https://doc.rust-lang.org/stable/std/env/fn.temp_dir.html)).
-
 ## License
 
 `fs2` is primarily distributed under the terms of both the MIT license and the

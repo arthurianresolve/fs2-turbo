@@ -2,6 +2,8 @@
 name = "fs2"
 # NB: When modifying, also modify html_root_url in lib.rs
 version = "0.4.3"
+edition = "2024"
+rust-version = "1.88.0"
 authors = ["Dan Burkert <dan@danburkert.com>"]
 license = "MIT/Apache-2.0"
 repository = "https://github.com/danburkert/fs2-rs"
@@ -13,11 +15,26 @@ keywords = ["file", "file-system", "lock", "duplicate", "flock"]
 travis-ci = { repository = "danburkert/fs2-rs" }
 appveyor = { repository = "danburkert/fs2-rs" }
 
+[dependencies]
+cfg-if = "1"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2.30"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["handleapi", "processthreadsapi", "winerror", "fileapi", "winbase", "std"] }
+windows-sys = { version = "0.61.2", features = [
+    "Wdk_Storage_FileSystem",
+    "Wdk_System_SystemServices",
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Ioctl",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 tempdir = "0.3"
+tempfile = "3.27"

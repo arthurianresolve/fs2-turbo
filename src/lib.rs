@@ -2,20 +2,18 @@
 
 #![doc(html_root_url = "https://docs.rs/fs2/0.4.3")]
 
-#![cfg_attr(test, feature(test))]
-
 #[cfg(windows)]
 extern crate winapi;
 
 #[cfg(unix)]
 mod unix;
 #[cfg(unix)]
-use unix as sys;
+use crate::unix as sys;
 
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
-use windows as sys;
+use crate::windows as sys;
 
 use std::fs::File;
 use std::io::{Error, Result};
@@ -200,7 +198,6 @@ pub fn allocation_granularity<P>(path: P) -> Result<u64> where P: AsRef<Path> {
 mod test {
 
     extern crate tempdir;
-    extern crate test;
 
     use std::fs;
     use super::*;
@@ -331,128 +328,4 @@ mod test {
         assert!(available_space <= free_space);
     }
 
-    /// Benchmarks creating and removing a file. This is a baseline benchmark
-    /// for comparing against the truncate and allocate benchmarks.
-    #[bench]
-    fn bench_file_create(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("file");
-
-        b.iter(|| {
-            fs::OpenOptions::new()
-                            .read(true)
-                            .write(true)
-                            .create(true)
-                            .open(&path)
-                            .unwrap();
-            fs::remove_file(&path).unwrap();
-        });
-    }
-
-    /// Benchmarks creating a file, truncating it to 32MiB, and deleting it.
-    #[bench]
-    fn bench_file_truncate(b: &mut test::Bencher) {
-        let size = 32 * 1024 * 1024;
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("file");
-
-        b.iter(|| {
-            let file = fs::OpenOptions::new()
-                                       .read(true)
-                                       .write(true)
-                                       .create(true)
-                                       .open(&path)
-                                       .unwrap();
-            file.set_len(size).unwrap();
-            fs::remove_file(&path).unwrap();
-        });
-    }
-
-    /// Benchmarks creating a file, allocating 32MiB for it, and deleting it.
-    #[bench]
-    fn bench_file_allocate(b: &mut test::Bencher) {
-        let size = 32 * 1024 * 1024;
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("file");
-
-        b.iter(|| {
-            let file = fs::OpenOptions::new()
-                                       .read(true)
-                                       .write(true)
-                                       .create(true)
-                                       .open(&path)
-                                       .unwrap();
-            file.allocate(size).unwrap();
-            fs::remove_file(&path).unwrap();
-        });
-    }
-
-    /// Benchmarks creating a file, allocating 32MiB for it, and deleting it.
-    #[bench]
-    fn bench_allocated_size(b: &mut test::Bencher) {
-        let size = 32 * 1024 * 1024;
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("file");
-        let file = fs::OpenOptions::new()
-                                   .read(true)
-                                   .write(true)
-                                   .create(true)
-                                   .open(&path)
-                                   .unwrap();
-        file.allocate(size).unwrap();
-
-        b.iter(|| {
-            file.allocated_size().unwrap();
-        });
-    }
-
-    /// Benchmarks duplicating a file descriptor or handle.
-    #[bench]
-    fn bench_duplicate(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("fs2");
-        let file = fs::OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
-
-        b.iter(|| test::black_box(file.duplicate().unwrap()));
-    }
-
-    /// Benchmarks locking and unlocking a file lock.
-    #[bench]
-    fn bench_lock_unlock(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        let path = tempdir.path().join("fs2");
-        let file = fs::OpenOptions::new().read(true).write(true).create(true).open(&path).unwrap();
-
-        b.iter(|| {
-            file.lock_exclusive().unwrap();
-            file.unlock().unwrap();
-        });
-    }
-
-    /// Benchmarks the free space method.
-    #[bench]
-    fn bench_free_space(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        b.iter(|| {
-            test::black_box(free_space(&tempdir.path()).unwrap());
-        });
-    }
-
-    /// Benchmarks the available space method.
-    #[bench]
-    fn bench_available_space(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        b.iter(|| {
-            test::black_box(available_space(&tempdir.path()).unwrap());
-        });
-    }
-
-    /// Benchmarks the total space method.
-    #[bench]
-    fn bench_total_space(b: &mut test::Bencher) {
-        let tempdir = tempdir::TempDir::new("fs2").unwrap();
-        b.iter(|| {
-            test::black_box(total_space(&tempdir.path()).unwrap());
-        });
-    }
 }
