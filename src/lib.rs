@@ -6,14 +6,26 @@
 extern crate winapi;
 
 #[cfg(unix)]
+#[path = "legacy_unix.rs"]
+mod legacy_unix;
+#[cfg(unix)]
+use crate::legacy_unix as sys;
+#[cfg(unix)]
+#[path = "unix/bridge.rs"]
 mod unix;
 #[cfg(unix)]
-use crate::unix as sys;
+use crate::unix as modular_sys;
 
 #[cfg(windows)]
+#[path = "legacy_windows.rs"]
+mod legacy_windows;
+#[cfg(windows)]
+use crate::legacy_windows as sys;
+#[cfg(windows)]
+#[path = "windows/bridge.rs"]
 mod windows;
 #[cfg(windows)]
-use crate::windows as sys;
+use crate::windows as modular_sys;
 
 use std::fs::File;
 use std::io::{Error, Result};
