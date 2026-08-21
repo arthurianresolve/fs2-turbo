@@ -1,0 +1,18 @@
+[package]
+name = "fs2-compat-edition-2015"
+version = "0.0.0"
+edition = "2015"
+publish = false
+
+[features]
+default = []
+legacy = ["dep:fs2_v04"]
+current = ["dep:fs2_current"]
+
+[dependencies]
+fs2_v04 = { package = "fs2", version = "=0.4.3", optional = true }
+fs2_current = { package = "fs2", path = "../..", optional = true }
+
+[[bin]]
+name = "fs2-compat-edition-2015"
+path = "../v04_consumer.rs"
