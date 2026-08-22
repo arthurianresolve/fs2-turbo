@@ -5,6 +5,9 @@
 #[cfg(windows)]
 extern crate winapi;
 
+mod allocation;
+pub(crate) use crate::allocation::AllocationState;
+
 #[cfg(unix)]
 #[path = "legacy_unix.rs"]
 mod legacy_unix;
