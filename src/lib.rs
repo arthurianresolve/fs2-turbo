@@ -68,14 +68,16 @@ pub trait FileExt {
     /// The returned file will share the same file position as the original
     /// file.
     ///
-    /// If using rustc version 1.9 or later, prefer using `File::try_clone` to this.
-    ///
     /// # Notes
     ///
-    /// This is implemented with
-    /// [`dup(2)`](http://man7.org/linux/man-pages/man2/dup.2.html) on Unix and
-    /// [`DuplicateHandle`](https://msdn.microsoft.com/en-us/library/windows/desktop/ms724251(v=vs.85).aspx)
-    /// on Windows.
+    /// On Unix and Windows this retains the historical behavior, including an
+    /// inheritable descriptor or handle. Prefer [`File::try_clone`] when the
+    /// duplicate must not be inherited by a child process; use this method when
+    /// retaining the historical inheritable behavior is required.
+    #[deprecated(
+        since = "1.0.0",
+        note = "legacy duplicates are inheritable; use File::try_clone unless inheritance is required"
+    )]
     fn duplicate(&self) -> Result<File>;
 
     /// Returns the amount of physical space allocated for a file.
@@ -109,7 +111,7 @@ pub trait FileExt {
 
 impl FileExt for File {
     fn duplicate(&self) -> Result<File> {
-        sys::duplicate(self)
+        modular_sys::duplicate(self)
     }
     fn allocated_size(&self) -> Result<u64> {
         sys::allocated_size(self)
