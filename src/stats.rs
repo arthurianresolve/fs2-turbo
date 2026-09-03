@@ -29,3 +29,6 @@ pub(crate) fn free_space<P: AsRef<Path>>(path: P) -> Result<u64> {
 pub(crate) fn available_space<P: AsRef<Path>>(path: P) -> Result<u64> {
     crate::modular_sys::available_space(path.as_ref())
 }
+pub(crate) fn total_space<P: AsRef<Path>>(path: P) -> Result<u64> {
+    crate::modular_sys::total_space(path.as_ref())
+}
