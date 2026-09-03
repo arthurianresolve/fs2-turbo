@@ -226,7 +226,7 @@ pub fn free_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
 /// Returns the available space in bytes to non-priveleged users in the file
 /// system containing the provided path.
 pub fn available_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    statvfs(path).map(|stat| stat.available_space)
+    stats::available_space(path)
 }
 
 /// Returns the total space in bytes in the file system containing the provided
