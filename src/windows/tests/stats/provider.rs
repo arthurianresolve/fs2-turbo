@@ -1,6 +1,11 @@
 use super::*;
 use crate::AllocationState;
-use crate::windows::allocation::allocation_target;
+use crate::windows::allocation::{allocation_target, requested_range_is_allocated};
+use std::io::{Seek as _, SeekFrom, Write as _};
+use std::os::windows::io::AsRawHandle as _;
+use windows_sys::Win32::Foundation::{ERROR_INVALID_FUNCTION, ERROR_NOT_SUPPORTED};
+use windows_sys::Win32::System::IO::DeviceIoControl;
+use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 
 #[test]
 fn maps_win32_boolean_results() {
@@ -123,6 +128,59 @@ fn allocation_preserves_readonly_native_errors() {
 
     let readonly = fs::OpenOptions::new().read(true).open(path).unwrap();
     assert!(readonly.allocate(4096).is_err());
+}
+
+#[test]
+fn allocation_never_accepts_an_unallocated_sparse_prefix() {
+    let tempdir = tempdir().unwrap();
+    let mut file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(tempdir.path().join("fs2-sparse"))
+        .unwrap();
+    let mut returned = 0;
+    let sparse = unsafe {
+        // SAFETY: `file` owns the handle and this control has no input or output buffer.
+        DeviceIoControl(
+            file.as_raw_handle(),
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if sparse == 0 {
+        let error = std::io::Error::last_os_error();
+        if matches!(
+            error.raw_os_error(),
+            Some(code) if code == ERROR_INVALID_FUNCTION as i32 || code == ERROR_NOT_SUPPORTED as i32
+        ) {
+            return;
+        }
+        panic!("unable to create sparse-file allocation fixture: {error}");
+    }
+
+    file.set_len(2 * 1024 * 1024).unwrap();
+    file.seek(SeekFrom::Start(1024 * 1024)).unwrap();
+    file.write_all(&[1; 4096]).unwrap();
+    file.sync_all().unwrap();
+    assert!(crate::FileExt::allocated_size(&file).unwrap() >= 4096);
+    match requested_range_is_allocated(&file, 4096) {
+        Ok(false) => {}
+        Ok(true) => panic!("sparse fixture unexpectedly covered the requested prefix"),
+        Err(error) if error.kind() == std::io::ErrorKind::Unsupported => return,
+        Err(error) => panic!("unable to inspect sparse-file allocation: {error}"),
+    }
+
+    match file.allocate(4096) {
+        Ok(()) => assert!(requested_range_is_allocated(&file, 4096).unwrap()),
+        Err(error) => assert_eq!(error.kind(), std::io::ErrorKind::Unsupported),
+    }
 }
 
 #[test]
