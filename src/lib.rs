@@ -137,7 +137,7 @@ impl FileExt for File {
         allocation::allocate(self, len)
     }
     fn lock_shared(&self) -> Result<()> {
-        sys::lock_shared(self)
+        modular_sys::lock_shared(self, false)
     }
     fn lock_exclusive(&self) -> Result<()> {
         sys::lock_exclusive(self)
