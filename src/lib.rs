@@ -214,7 +214,7 @@ impl FsStats {
 
 /// Get the stats of the file system containing the provided path.
 pub fn statvfs<P>(path: P) -> Result<FsStats> where P: AsRef<Path> {
-    sys::statvfs(path.as_ref())
+    stats::statvfs(path)
 }
 
 /// Returns the number of free bytes in the file system containing the provided

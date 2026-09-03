@@ -20,3 +20,6 @@ pub(crate) enum SpaceKind {
     Total,
     AllocationGranularity,
 }
+pub(crate) fn statvfs<P: AsRef<Path>>(path: P) -> Result<FsStats> {
+    crate::modular_sys::statvfs(path.as_ref()).and_then(FilesystemCounters::into_stats)
+}
