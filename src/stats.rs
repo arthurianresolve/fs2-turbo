@@ -1,4 +1,5 @@
 mod counters;
+mod query;
 mod snapshot;
 mod validation;
 
@@ -6,6 +7,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 
 pub(crate) use self::counters::FilesystemCounters;
+pub use self::query::FsStatsQuery;
 pub use self::snapshot::FsStats;
 
 #[cold]

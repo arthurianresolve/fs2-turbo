@@ -60,3 +60,9 @@ fn explicit_fs2_lock_aliases_remain_callable() {
     FileExt::fs2_try_lock_exclusive(&file).unwrap();
     FileExt::fs2_unlock(&file).unwrap();
 }
+#[test]
+fn prepared_stats_query_remains_callable() {
+    let directory = tempfile::tempdir().unwrap();
+    let query = fs2::FsStatsQuery::new(directory.path()).unwrap();
+    let _ = query.snapshot().unwrap();
+}

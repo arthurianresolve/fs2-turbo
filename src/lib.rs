@@ -7,7 +7,7 @@ extern crate winapi;
 
 mod allocation;
 mod stats;
-pub use crate::stats::FsStats;
+pub use crate::stats::{FsStats, FsStatsQuery};
 pub(crate) use crate::allocation::AllocationState;
 
 #[cfg(unix)]
