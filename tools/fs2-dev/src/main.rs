@@ -75,6 +75,26 @@ fn repository_root() -> &'static Path {
         .expect("fs2-dev must remain under tools/fs2-dev")
 }
 
+fn lower_hex(bytes: impl AsRef<[u8]>) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    let bytes = bytes.as_ref();
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
 fn invalid_data(message: impl Into<String>) -> DynError {
     io::Error::new(io::ErrorKind::InvalidData, message.into()).into()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn lower_hex_preserves_leading_zeroes() {
+        assert_eq!(super::lower_hex([0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
+    }
 }
