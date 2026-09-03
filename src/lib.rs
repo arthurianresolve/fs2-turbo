@@ -156,7 +156,7 @@ impl FileExt for File {
 /// Returns the error that a call to a try lock method on a contended file will
 /// return.
 pub fn lock_contended_error() -> Error {
-    sys::lock_error()
+    modular_sys::lock_error()
 }
 
 /// `FsStats` contains some common stats about a file system.
