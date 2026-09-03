@@ -33,7 +33,7 @@ use super::FsStats;
 /// ```
 #[derive(Debug)]
 pub struct FsStatsQuery {
-    inner: crate::modular_sys::StatsQuery,
+    inner: crate::sys::StatsQuery,
 }
 
 impl FsStatsQuery {
@@ -49,14 +49,14 @@ impl FsStatsQuery {
         let path = CString::new(path.as_ref().as_os_str().as_bytes())
             .map_err(|_| Error::new(ErrorKind::InvalidInput, "path contained a null"))?;
         Ok(Self {
-            inner: crate::modular_sys::StatsQuery::new(path),
+            inner: crate::sys::StatsQuery::new(path),
         })
     }
 
     #[cfg(not(unix))]
     fn new_path(path: &Path) -> Result<Self> {
         let path = absolute_path(path)?;
-        crate::modular_sys::StatsQuery::new(path.as_ref()).map(|inner| Self { inner })
+        crate::sys::StatsQuery::new(path.as_ref()).map(|inner| Self { inner })
     }
 
     /// Acquires a fresh statistics snapshot.
