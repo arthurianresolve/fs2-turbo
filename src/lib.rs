@@ -140,7 +140,7 @@ impl FileExt for File {
         modular_sys::lock_shared(self, false)
     }
     fn lock_exclusive(&self) -> Result<()> {
-        sys::lock_exclusive(self)
+        modular_sys::lock_exclusive(self, false)
     }
     fn try_lock_shared(&self) -> Result<()> {
         sys::try_lock_shared(self)
