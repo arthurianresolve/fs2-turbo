@@ -1,4 +1,5 @@
 mod counters;
+mod snapshot;
 mod validation;
 
 use std::io::{Error, ErrorKind, Result};
