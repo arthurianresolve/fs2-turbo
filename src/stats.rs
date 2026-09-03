@@ -23,3 +23,6 @@ pub(crate) enum SpaceKind {
 pub(crate) fn statvfs<P: AsRef<Path>>(path: P) -> Result<FsStats> {
     crate::modular_sys::statvfs(path.as_ref()).and_then(FilesystemCounters::into_stats)
 }
+pub(crate) fn free_space<P: AsRef<Path>>(path: P) -> Result<u64> {
+    crate::modular_sys::free_space(path.as_ref())
+}

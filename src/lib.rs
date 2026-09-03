@@ -220,7 +220,7 @@ pub fn statvfs<P>(path: P) -> Result<FsStats> where P: AsRef<Path> {
 /// Returns the number of free bytes in the file system containing the provided
 /// path.
 pub fn free_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    statvfs(path).map(|stat| stat.free_space)
+    stats::free_space(path)
 }
 
 /// Returns the available space in bytes to non-priveleged users in the file
