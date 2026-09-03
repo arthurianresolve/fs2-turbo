@@ -24,3 +24,6 @@ pub(crate) use self::lock::lock_error;
 #[path = "stats/mod.rs"]
 mod stats;
 pub(crate) use self::stats::statvfs;
+pub(crate) fn free_space(path: &std::path::Path) -> std::io::Result<u64> {
+    stats::space(path, crate::stats::SpaceKind::Free)
+}
