@@ -35,3 +35,6 @@ pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
 pub(crate) fn total_space(path: &std::path::Path) -> std::io::Result<u64> {
     stats::space(path, crate::stats::SpaceKind::Total)
 }
+pub(crate) fn allocation_granularity(path: &std::path::Path) -> std::io::Result<u64> {
+    stats::space(path, crate::stats::SpaceKind::AllocationGranularity)
+}
