@@ -241,6 +241,6 @@ pub fn total_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
 /// On Posix, this is equivalent to the filesystem's block size.
 /// On Windows, this is equivalent to the filesystem's cluster size.
 pub fn allocation_granularity<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    statvfs(path).map(|stat| stat.allocation_granularity)
+    stats::allocation_granularity(path)
 }
 

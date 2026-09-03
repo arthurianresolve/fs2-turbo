@@ -32,3 +32,6 @@ pub(crate) fn available_space<P: AsRef<Path>>(path: P) -> Result<u64> {
 pub(crate) fn total_space<P: AsRef<Path>>(path: P) -> Result<u64> {
     crate::modular_sys::total_space(path.as_ref())
 }
+pub(crate) fn allocation_granularity<P: AsRef<Path>>(path: P) -> Result<u64> {
+    crate::modular_sys::allocation_granularity(path.as_ref())
+}
