@@ -6,6 +6,7 @@
 extern crate winapi;
 
 mod allocation;
+mod stats;
 pub(crate) use crate::allocation::AllocationState;
 
 #[cfg(unix)]
@@ -149,6 +150,21 @@ pub struct FsStats {
 }
 
 impl FsStats {
+    #[inline]
+    pub(crate) const fn from_parts(
+        free_space: u64,
+        available_space: u64,
+        total_space: u64,
+        allocation_granularity: u64,
+    ) -> Self {
+        Self {
+            free_space,
+            available_space,
+            total_space,
+            allocation_granularity,
+        }
+    }
+
     /// Returns the number of free bytes in the file system containing the provided
     /// path.
     pub fn free_space(&self) -> u64 {

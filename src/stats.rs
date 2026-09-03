@@ -1,0 +1,22 @@
+mod counters;
+mod validation;
+
+use std::io::{Error, ErrorKind, Result};
+use std::path::Path;
+
+pub(crate) use self::counters::FilesystemCounters;
+pub(crate) use crate::FsStats;
+
+#[cold]
+#[inline(never)]
+pub(crate) fn invalid_stats(message: &'static str) -> Error {
+    Error::new(ErrorKind::InvalidData, message)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SpaceKind {
+    Free,
+    Available,
+    Total,
+    AllocationGranularity,
+}
