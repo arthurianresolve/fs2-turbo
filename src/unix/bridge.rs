@@ -5,6 +5,10 @@ pub(crate) use self::file::duplicate;
 #[path = "allocation.rs"]
 mod allocation;
 pub(crate) use self::allocation::allocation_state;
-pub(crate) use self::allocation::{
-    ALLOCATE_SPACE_EXTENDS_LENGTH, ALWAYS_RESERVE_RANGE, allocate_space,
-};
+pub(crate) use self::allocation::{ALLOCATE_SPACE_EXTENDS_LENGTH, ALWAYS_RESERVE_RANGE, allocate_space};
+#[cfg(target_os = "solaris")]
+#[path = "solaris.rs"]
+mod solaris;
+#[path = "lock.rs"]
+mod lock;
+pub(crate) use self::lock::lock_shared;
