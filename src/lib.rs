@@ -183,15 +183,6 @@ impl FsStats {
             allocation_granularity,
         }
     }
-
-    /// Returns the filesystem's disk space allocation granularity in bytes.
-    /// The provided path may be for any file in the filesystem.
-    ///
-    /// On Posix, this is equivalent to the filesystem's block size.
-    /// On Windows, this is equivalent to the filesystem's cluster size.
-    pub fn allocation_granularity(&self) -> u64 {
-        self.allocation_granularity
-    }
 }
 
 /// Get the stats of the file system containing the provided path.
