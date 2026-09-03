@@ -72,7 +72,7 @@ mod platform;
 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) use platform::allocate_space_with;
-pub(crate) use platform::{ALLOCATE_SPACE_EXTENDS_LENGTH, allocate_space};
+pub(crate) use platform::{ALLOCATE_SPACE_EXTENDS_LENGTH, ALWAYS_RESERVE_RANGE, allocate_space};
 
 #[cfg(test)]
 #[path = "allocation/tests.rs"]

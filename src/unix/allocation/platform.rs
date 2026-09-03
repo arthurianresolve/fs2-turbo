@@ -14,6 +14,9 @@ cfg_if! {
             use std::os::unix::io::AsRawFd;
 
             pub(crate) const ALLOCATE_SPACE_EXTENDS_LENGTH: bool = true;
+            // Aggregate st_blocks cannot prove that a particular sparse range
+            // is covered, so every nonempty request reaches posix_fallocate.
+            pub(crate) const ALWAYS_RESERVE_RANGE: bool = true;
 
             pub(crate) fn allocate_space(
                 file: &File,
@@ -65,6 +68,7 @@ cfg_if! {
             use std::os::unix::io::AsRawFd;
 
             pub(crate) const ALLOCATE_SPACE_EXTENDS_LENGTH: bool = false;
+            pub(crate) const ALWAYS_RESERVE_RANGE: bool = false;
 
             pub(crate) fn allocate_space(file: &File, state: AllocationState, len: u64) -> Result<()> {
                 allocate_space_with_state(state, len, |fstore| unsafe {
@@ -135,6 +139,9 @@ cfg_if! {
             use super::{AllocationState, Error, ErrorKind, File, Result};
 
             pub(crate) const ALLOCATE_SPACE_EXTENDS_LENGTH: bool = false;
+            // Aggregate st_blocks cannot prove requested-prefix coverage. Force
+            // every nonempty request through the fail-closed provider below.
+            pub(crate) const ALWAYS_RESERVE_RANGE: bool = true;
 
             pub(crate) fn allocate_space(
                 _file: &File,
@@ -152,4 +159,6 @@ cfg_if! {
 
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) use allocation_impl::allocate_space_with;
-pub(crate) use allocation_impl::{ALLOCATE_SPACE_EXTENDS_LENGTH, allocate_space};
+pub(crate) use allocation_impl::{
+    ALLOCATE_SPACE_EXTENDS_LENGTH, ALWAYS_RESERVE_RANGE, allocate_space,
+};
