@@ -12,3 +12,4 @@ mod solaris;
 #[path = "lock.rs"]
 mod lock;
 pub(crate) use self::lock::lock_shared;
+pub(crate) use self::lock::lock_exclusive;
