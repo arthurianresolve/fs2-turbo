@@ -29,3 +29,6 @@ pub(crate) use self::stats::statvfs;
 pub(crate) fn free_space(path: &std::path::Path) -> std::io::Result<u64> {
     stats::space(path, crate::stats::SpaceKind::Free)
 }
+pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
+    stats::space(path, crate::stats::SpaceKind::Available)
+}
