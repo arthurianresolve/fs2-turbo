@@ -30,3 +30,6 @@ pub(crate) fn free_space(path: &std::path::Path) -> std::io::Result<u64> {
 pub(crate) fn available_space(path: &std::path::Path) -> std::io::Result<u64> {
     stats::space(path, crate::stats::SpaceKind::Available)
 }
+pub(crate) fn total_space(path: &std::path::Path) -> std::io::Result<u64> {
+    stats::space(path, crate::stats::SpaceKind::Total)
+}
