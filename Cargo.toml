@@ -22,7 +22,7 @@ exclude = [
 ]
 
 [workspace]
-members = []
+members = ["tools/fs2-dev"]
 exclude = ["compatibility", "benchmarks/vendor/page_size"]
 resolver = "3"
 
