@@ -19,3 +19,4 @@ pub(crate) fn try_lock_shared(file: &std::fs::File) -> std::io::Result<()> {
 pub(crate) fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
     lock::lock_exclusive(file, true)
 }
+pub(crate) use self::lock::unlock;
