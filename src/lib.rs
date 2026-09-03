@@ -184,12 +184,6 @@ impl FsStats {
         }
     }
 
-    /// Returns the total space in bytes in the file system containing the provided
-    /// path.
-    pub fn total_space(&self) -> u64 {
-        self.total_space
-    }
-
     /// Returns the filesystem's disk space allocation granularity in bytes.
     /// The provided path may be for any file in the filesystem.
     ///

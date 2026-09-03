@@ -9,4 +9,12 @@ impl crate::FsStats {
     pub fn available_space(&self) -> u64 {
         self.available_space
     }
+    /// Returns the total space in bytes in the file system containing the provided path.
+    ///
+    /// On Windows, this is the physical volume capacity when the modern
+    /// provider is available; the legacy fallback may be quota-limited.
+    #[inline]
+    pub fn total_space(&self) -> u64 {
+        self.total_space
+    }
 }
