@@ -7,24 +7,15 @@ extern crate winapi;
 
 mod allocation;
 mod stats;
+pub use crate::stats::FsStats;
 pub(crate) use crate::allocation::AllocationState;
 
-#[cfg(unix)]
-#[path = "legacy_unix.rs"]
-mod legacy_unix;
-#[cfg(unix)]
-use crate::legacy_unix as sys;
 #[cfg(unix)]
 #[path = "unix/bridge.rs"]
 mod unix;
 #[cfg(unix)]
 use crate::unix as modular_sys;
 
-#[cfg(windows)]
-#[path = "legacy_windows.rs"]
-mod legacy_windows;
-#[cfg(windows)]
-use crate::legacy_windows as sys;
 #[cfg(windows)]
 #[path = "windows/bridge.rs"]
 mod windows;
@@ -157,32 +148,6 @@ impl FileExt for File {
 /// return.
 pub fn lock_contended_error() -> Error {
     modular_sys::lock_error()
-}
-
-/// `FsStats` contains some common stats about a file system.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct FsStats {
-    free_space: u64,
-    available_space: u64,
-    total_space: u64,
-    allocation_granularity: u64,
-}
-
-impl FsStats {
-    #[inline]
-    pub(crate) const fn from_parts(
-        free_space: u64,
-        available_space: u64,
-        total_space: u64,
-        allocation_granularity: u64,
-    ) -> Self {
-        Self {
-            free_space,
-            available_space,
-            total_space,
-            allocation_granularity,
-        }
-    }
 }
 
 /// Get the stats of the file system containing the provided path.

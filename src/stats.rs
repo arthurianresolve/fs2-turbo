@@ -6,7 +6,7 @@ use std::io::{Error, ErrorKind, Result};
 use std::path::Path;
 
 pub(crate) use self::counters::FilesystemCounters;
-pub(crate) use crate::FsStats;
+pub use self::snapshot::FsStats;
 
 #[cold]
 #[inline(never)]
