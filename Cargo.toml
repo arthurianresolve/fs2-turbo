@@ -1,28 +1,42 @@
 [package]
 name = "fs2"
-# NB: When modifying, also modify html_root_url in lib.rs
 version = "0.4.3"
+edition.workspace = true
+rust-version.workspace = true
+authors = ["Dan Burkert <dan@danburkert.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/arthurianresolve/fs2-rs"
+documentation = "https://docs.rs/fs2"
+description = "Cross-platform file locks, allocation, duplication and filesystem statistics."
+keywords = ["file", "file-system", "lock", "duplicate", "flock"]
+categories = ["filesystem"]
+exclude = [
+    ".cargo/",
+    ".github/",
+    "benchmarks/",
+    "compatibility/",
+    "CONTEXT.md",
+    "deny.toml",
+    "support-matrix.json",
+    "tools/",
+]
+
+[workspace]
+members = []
+exclude = ["compatibility", "benchmarks/vendor/page_size"]
+resolver = "3"
+
+[workspace.package]
 edition = "2024"
 rust-version = "1.88.0"
-authors = ["Dan Burkert <dan@danburkert.com>"]
-license = "MIT/Apache-2.0"
-repository = "https://github.com/danburkert/fs2-rs"
-documentation = "https://docs.rs/fs2"
-description = "Cross-platform file locks and file duplication."
-keywords = ["file", "file-system", "lock", "duplicate", "flock"]
-
-[badges]
-travis-ci = { repository = "danburkert/fs2-rs" }
-appveyor = { repository = "danburkert/fs2-rs" }
 
 [dependencies]
 cfg-if = "1"
 
 [target.'cfg(unix)'.dependencies]
-libc = "0.2.30"
+libc = "0.2.189"
 
 [target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3", features = ["handleapi", "processthreadsapi", "winerror", "fileapi", "winbase", "std"] }
 windows-sys = { version = "0.61.2", features = [
     "Wdk_Storage_FileSystem",
     "Wdk_System_SystemServices",
@@ -36,5 +50,5 @@ windows-sys = { version = "0.61.2", features = [
 ] }
 
 [dev-dependencies]
-tempdir = "0.3"
 tempfile = "3.27"
+
