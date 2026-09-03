@@ -16,3 +16,6 @@ pub(crate) use self::lock::lock_exclusive;
 pub(crate) fn try_lock_shared(file: &std::fs::File) -> std::io::Result<()> {
     lock::lock_shared(file, true)
 }
+pub(crate) fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    lock::lock_exclusive(file, true)
+}
