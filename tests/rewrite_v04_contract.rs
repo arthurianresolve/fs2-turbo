@@ -41,3 +41,22 @@ fn v04_surface_remains_callable() {
     let _ = allocation_granularity(&path).unwrap();
     let _ = lock_contended_error();
 }
+#[test]
+fn explicit_fs2_lock_aliases_remain_callable() {
+    let directory = tempfile::tempdir().unwrap();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(directory.path().join("aliases"))
+        .unwrap();
+    FileExt::fs2_lock_shared(&file).unwrap();
+    FileExt::fs2_unlock(&file).unwrap();
+    FileExt::fs2_lock_exclusive(&file).unwrap();
+    FileExt::fs2_unlock(&file).unwrap();
+    FileExt::fs2_try_lock_shared(&file).unwrap();
+    FileExt::fs2_unlock(&file).unwrap();
+    FileExt::fs2_try_lock_exclusive(&file).unwrap();
+    FileExt::fs2_unlock(&file).unwrap();
+}

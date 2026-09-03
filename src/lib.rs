@@ -53,7 +53,6 @@ use std::path::Path;
 /// [`LockFile`](https://msdn.microsoft.com/en-us/library/windows/desktop/aa365202(v=vs.85).aspx)
 /// on Windows.
 pub trait FileExt {
-
     /// Returns a duplicate instance of the file.
     ///
     /// The returned file will share the same file position as the original
@@ -99,46 +98,108 @@ pub trait FileExt {
 
     /// Locks the file for shared usage, blocking if the file is currently
     /// locked exclusively.
-    fn lock_shared(&self) -> Result<()>;
+    #[inline]
+    fn fs2_lock_shared(&self) -> Result<()> {
+        self.lock_shared()
+    }
 
     /// Locks the file for exclusive usage, blocking if the file is currently
     /// locked.
-    fn lock_exclusive(&self) -> Result<()>;
+    #[inline]
+    fn fs2_lock_exclusive(&self) -> Result<()> {
+        self.lock_exclusive()
+    }
 
-    /// Locks the file for shared usage, or returns a an error if the file is
+    /// Locks the file for shared usage, or returns an error if the file is
     /// currently locked (see `lock_contended_error`).
-    fn try_lock_shared(&self) -> Result<()>;
+    #[inline]
+    fn fs2_try_lock_shared(&self) -> Result<()> {
+        self.try_lock_shared()
+    }
 
-    /// Locks the file for shared usage, or returns a an error if the file is
+    /// Locks the file for exclusive usage, or returns an error if the file is
     /// currently locked (see `lock_contended_error`).
-    fn try_lock_exclusive(&self) -> Result<()>;
+    #[inline]
+    fn fs2_try_lock_exclusive(&self) -> Result<()> {
+        self.try_lock_exclusive()
+    }
 
     /// Unlocks the file.
+    #[inline]
+    fn fs2_unlock(&self) -> Result<()> {
+        self.unlock()
+    }
+
+    /// Legacy shared-lock method. Prefer [`FileExt::fs2_lock_shared`] on Rust
+    /// 1.97 and later.
+    fn lock_shared(&self) -> Result<()>;
+
+    /// Legacy exclusive-lock method. Prefer [`FileExt::fs2_lock_exclusive`].
+    fn lock_exclusive(&self) -> Result<()>;
+
+    /// Legacy non-blocking shared-lock method. Prefer
+    /// [`FileExt::fs2_try_lock_shared`] on Rust 1.97 and later.
+    fn try_lock_shared(&self) -> Result<()>;
+
+    /// Legacy non-blocking exclusive-lock method. Prefer
+    /// [`FileExt::fs2_try_lock_exclusive`].
+    fn try_lock_exclusive(&self) -> Result<()>;
+
+    /// Legacy unlock method. Prefer [`FileExt::fs2_unlock`] on Rust 1.97 and
+    /// later.
     fn unlock(&self) -> Result<()>;
 }
 
 impl FileExt for File {
+    #[inline]
     fn duplicate(&self) -> Result<File> {
         modular_sys::duplicate(self)
     }
+    #[inline]
     fn allocated_size(&self) -> Result<u64> {
         allocation::allocated_size(self)
     }
+    #[inline]
     fn allocate(&self, len: u64) -> Result<()> {
         allocation::allocate(self, len)
     }
+    #[inline]
+    fn fs2_lock_shared(&self) -> Result<()> {
+        modular_sys::lock_shared(self, false)
+    }
+    #[inline]
+    fn fs2_lock_exclusive(&self) -> Result<()> {
+        modular_sys::lock_exclusive(self, false)
+    }
+    #[inline]
+    fn fs2_try_lock_shared(&self) -> Result<()> {
+        modular_sys::lock_shared(self, true)
+    }
+    #[inline]
+    fn fs2_try_lock_exclusive(&self) -> Result<()> {
+        modular_sys::lock_exclusive(self, true)
+    }
+    #[inline]
+    fn fs2_unlock(&self) -> Result<()> {
+        modular_sys::unlock(self)
+    }
+    #[inline]
     fn lock_shared(&self) -> Result<()> {
         modular_sys::lock_shared(self, false)
     }
+    #[inline]
     fn lock_exclusive(&self) -> Result<()> {
         modular_sys::lock_exclusive(self, false)
     }
+    #[inline]
     fn try_lock_shared(&self) -> Result<()> {
-        modular_sys::try_lock_shared(self)
+        modular_sys::lock_shared(self, true)
     }
+    #[inline]
     fn try_lock_exclusive(&self) -> Result<()> {
-        modular_sys::try_lock_exclusive(self)
+        modular_sys::lock_exclusive(self, true)
     }
+    #[inline]
     fn unlock(&self) -> Result<()> {
         modular_sys::unlock(self)
     }
