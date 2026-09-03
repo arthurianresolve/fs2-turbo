@@ -21,3 +21,6 @@ pub(crate) fn try_lock_exclusive(file: &std::fs::File) -> std::io::Result<()> {
 }
 pub(crate) use self::lock::unlock;
 pub(crate) use self::lock::lock_error;
+#[path = "stats/mod.rs"]
+mod stats;
+pub(crate) use self::stats::statvfs;
