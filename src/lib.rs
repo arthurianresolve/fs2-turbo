@@ -114,7 +114,7 @@ impl FileExt for File {
         modular_sys::duplicate(self)
     }
     fn allocated_size(&self) -> Result<u64> {
-        sys::allocated_size(self)
+        allocation::allocated_size(self)
     }
     fn allocate(&self, len: u64) -> Result<()> {
         sys::allocate(self, len)
