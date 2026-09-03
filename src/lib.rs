@@ -84,9 +84,26 @@ pub trait FileExt {
     fn allocated_size(&self) -> Result<u64>;
 
     /// Ensures that at least `len` bytes of disk space are allocated for the
-    /// file, and the file size is at least `len` bytes. After a successful call
-    /// to `allocate`, subsequent writes to the file within the specified length
+    /// file, and the file size is at least `len` bytes. Except for the Apple
+    /// compatibility behavior noted below, after a successful call to
+    /// `allocate`, subsequent writes to the file within the specified length
     /// are guaranteed not to fail because of lack of disk space.
+    /// On platforms that cannot reserve or prove coverage of the requested
+    /// range, this returns [`std::io::ErrorKind::Unsupported`].
+    /// On Windows, sparse files may materialize holes through the existing EOF
+    /// before restoring the sparse attribute; compressed files can return
+    /// Unsupported.
+    /// On macOS and iOS, the native primitive reserves file backing store from
+    /// physical EOF; it does not expose portable extent-by-extent coverage of a
+    /// previously sparse prefix.
+    ///
+    /// # Concurrency
+    ///
+    /// The caller must exclusively own changes to the file's logical length
+    /// while this method runs. Some platform implementations use an exact-size
+    /// operation to extend the file; a concurrent, non-cooperating resize can
+    /// otherwise be overwritten. Advisory locks provide this exclusion only
+    /// when every participant follows the same locking protocol.
     fn allocate(&self, len: u64) -> Result<()>;
 
     /// Locks the file for shared usage, blocking if the file is currently
@@ -117,7 +134,7 @@ impl FileExt for File {
         allocation::allocated_size(self)
     }
     fn allocate(&self, len: u64) -> Result<()> {
-        sys::allocate(self, len)
+        allocation::allocate(self, len)
     }
     fn lock_shared(&self) -> Result<()> {
         sys::lock_shared(self)
