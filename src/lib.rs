@@ -149,7 +149,7 @@ impl FileExt for File {
         modular_sys::try_lock_exclusive(self)
     }
     fn unlock(&self) -> Result<()> {
-        sys::unlock(self)
+        modular_sys::unlock(self)
     }
 }
 
