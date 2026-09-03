@@ -12,3 +12,4 @@ pub(crate) use self::allocation::{ALLOCATE_SPACE_EXTENDS_LENGTH, ALWAYS_RESERVE_
 #[path = "lock.rs"]
 mod lock;
 pub(crate) use self::lock::lock_shared;
+pub(crate) use self::lock::lock_exclusive;
