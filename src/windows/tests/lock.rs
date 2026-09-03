@@ -10,6 +10,7 @@ use std::time::Duration;
 use windows_sys::Win32::Foundation::{GetHandleInformation, HANDLE_FLAG_INHERIT};
 use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
 
+use super::CompletionPort;
 use crate::{FileExt, lock_contended_error};
 use tempfile::tempdir;
 #[test]
@@ -144,6 +145,17 @@ fn overlapped_try_exclusive_lock_succeeds_when_uncontended() {
     let file = open_overlapped_file(&tempdir.path().join("fs2"));
 
     file.fs2_try_lock_exclusive().unwrap();
+    file.fs2_unlock().unwrap();
+}
+
+#[test]
+fn overlapped_shared_lock_does_not_enqueue_private_iocp_completion() {
+    let tempdir = tempdir().unwrap();
+    let file = open_overlapped_file(&tempdir.path().join("fs2"));
+    let completion_port = CompletionPort::associate(&file);
+
+    file.fs2_lock_shared().unwrap();
+    completion_port.assert_empty();
     file.fs2_unlock().unwrap();
 }
 

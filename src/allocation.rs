@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Result;
 
-use crate::modular_sys as sys;
+use crate::sys;
 
 #[cfg(test)]
 mod tests;

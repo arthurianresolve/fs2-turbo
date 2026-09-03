@@ -1,32 +1,35 @@
 //! Extended utilities for working with files and filesystems in Rust.
 
-#![doc(html_root_url = "https://docs.rs/fs2/0.4.3")]
-
-#[cfg(windows)]
-extern crate winapi;
-
 mod allocation;
 mod stats;
-pub use crate::stats::{FsStats, FsStatsQuery};
-pub(crate) use crate::allocation::AllocationState;
 
 #[cfg(unix)]
-#[path = "unix/bridge.rs"]
 mod unix;
 #[cfg(unix)]
-use crate::unix as modular_sys;
+use unix as sys;
 
 #[cfg(windows)]
-#[path = "windows/bridge.rs"]
 mod windows;
 #[cfg(windows)]
-use crate::windows as modular_sys;
+use windows as sys;
 
 use std::fs::File;
 use std::io::{Error, Result};
-use std::path::Path;
+
+pub use stats::{
+    FsStats, FsStatsQuery, allocation_granularity, available_space, free_space, statvfs,
+    total_space,
+};
+
+pub(crate) use allocation::AllocationState;
 
 /// Extension trait for `std::fs::File` which provides allocation, duplication and locking methods.
+///
+/// On Rust 1.97 and later, `std::fs::File` also has inherent locking methods
+/// whose names overlap this trait. Inherent methods take precedence over
+/// extension traits, so use the explicit `fs2_*` methods when calling the
+/// `fs2` implementation: `file.fs2_lock_shared()`,
+/// `file.fs2_try_lock_shared()`, and `file.fs2_unlock()`.
 ///
 /// ## Notes on File Locks
 ///
@@ -46,12 +49,14 @@ use std::path::Path;
 ///     permissions.
 ///   * File locks may only be relied upon to be advisory.
 ///
-/// See the tests in `lib.rs` for cross-platform lock behavior that may be
-/// relied upon; see the tests in `unix.rs` and `windows.rs` for examples of
+/// See the tests in `tests/lib_integration.rs` for cross-platform lock behavior that may be
+/// relied upon; see the tests in `unix` and `windows` for examples of
 /// platform-specific behavior. File locks are implemented with
 /// [`flock(2)`](http://man7.org/linux/man-pages/man2/flock.2.html) on Unix and
-/// [`LockFile`](https://msdn.microsoft.com/en-us/library/windows/desktop/aa365202(v=vs.85).aspx)
-/// on Windows.
+/// [`LockFileEx`](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-lockfileex)
+/// on Windows. Solaris uses process-associated `fcntl` record locks: they
+/// coordinate separate processes, but independent handles in one process do
+/// not provide the handle-scoped contention and close behavior of `flock`.
 pub trait FileExt {
     /// Returns a duplicate instance of the file.
     ///
@@ -153,7 +158,7 @@ pub trait FileExt {
 impl FileExt for File {
     #[inline]
     fn duplicate(&self) -> Result<File> {
-        modular_sys::duplicate(self)
+        sys::duplicate(self)
     }
     #[inline]
     fn allocated_size(&self) -> Result<u64> {
@@ -165,81 +170,48 @@ impl FileExt for File {
     }
     #[inline]
     fn fs2_lock_shared(&self) -> Result<()> {
-        modular_sys::lock_shared(self, false)
+        sys::lock_shared(self, false)
     }
     #[inline]
     fn fs2_lock_exclusive(&self) -> Result<()> {
-        modular_sys::lock_exclusive(self, false)
+        sys::lock_exclusive(self, false)
     }
     #[inline]
     fn fs2_try_lock_shared(&self) -> Result<()> {
-        modular_sys::lock_shared(self, true)
+        sys::lock_shared(self, true)
     }
     #[inline]
     fn fs2_try_lock_exclusive(&self) -> Result<()> {
-        modular_sys::lock_exclusive(self, true)
+        sys::lock_exclusive(self, true)
     }
     #[inline]
     fn fs2_unlock(&self) -> Result<()> {
-        modular_sys::unlock(self)
+        sys::unlock(self)
     }
     #[inline]
     fn lock_shared(&self) -> Result<()> {
-        modular_sys::lock_shared(self, false)
+        sys::lock_shared(self, false)
     }
     #[inline]
     fn lock_exclusive(&self) -> Result<()> {
-        modular_sys::lock_exclusive(self, false)
+        sys::lock_exclusive(self, false)
     }
     #[inline]
     fn try_lock_shared(&self) -> Result<()> {
-        modular_sys::lock_shared(self, true)
+        sys::lock_shared(self, true)
     }
     #[inline]
     fn try_lock_exclusive(&self) -> Result<()> {
-        modular_sys::lock_exclusive(self, true)
+        sys::lock_exclusive(self, true)
     }
     #[inline]
     fn unlock(&self) -> Result<()> {
-        modular_sys::unlock(self)
+        sys::unlock(self)
     }
 }
 
 /// Returns the error that a call to a try lock method on a contended file will
 /// return.
 pub fn lock_contended_error() -> Error {
-    modular_sys::lock_error()
+    sys::lock_error()
 }
-
-/// Get the stats of the file system containing the provided path.
-pub fn statvfs<P>(path: P) -> Result<FsStats> where P: AsRef<Path> {
-    stats::statvfs(path)
-}
-
-/// Returns the number of free bytes in the file system containing the provided
-/// path.
-pub fn free_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    stats::free_space(path)
-}
-
-/// Returns the available space in bytes to non-priveleged users in the file
-/// system containing the provided path.
-pub fn available_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    stats::available_space(path)
-}
-
-/// Returns the total space in bytes in the file system containing the provided
-/// path.
-pub fn total_space<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    stats::total_space(path)
-}
-
-/// Returns the filesystem's disk space allocation granularity in bytes.
-/// The provided path may be for any file in the filesystem.
-///
-/// On Posix, this is equivalent to the filesystem's block size.
-/// On Windows, this is equivalent to the filesystem's cluster size.
-pub fn allocation_granularity<P>(path: P) -> Result<u64> where P: AsRef<Path> {
-    stats::allocation_granularity(path)
-}
-

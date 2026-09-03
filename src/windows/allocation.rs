@@ -3,8 +3,8 @@ use std::io::{Error, ErrorKind, Result};
 use std::os::windows::io::AsRawHandle;
 
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_IO_PENDING,
-    ERROR_MORE_DATA, ERROR_NOT_SUPPORTED, HANDLE,
+    ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER, ERROR_IO_PENDING, ERROR_MORE_DATA,
+    ERROR_NOT_SUPPORTED,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FILE_ALLOCATION_INFO, FILE_ATTRIBUTE_COMPRESSED, FILE_ATTRIBUTE_OFFLINE,
@@ -12,15 +12,15 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_SPARSE_FILE, FILE_BASIC_INFO, FILE_STANDARD_INFO, FileAllocationInfo,
     FileBasicInfo, FileStandardInfo, GetFileInformationByHandleEx, SetFileInformationByHandle,
 };
-use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult, OVERLAPPED};
+use windows_sys::Win32::System::IO::{DeviceIoControl, GetOverlappedResult};
 use windows_sys::Win32::System::Ioctl::{
     FILE_ALLOCATED_RANGE_BUFFER, FILE_SET_SPARSE_BUFFER, FSCTL_QUERY_ALLOCATED_RANGES,
     FSCTL_SET_SPARSE,
 };
-use windows_sys::Win32::System::Threading::CreateEventW;
 
 use crate::AllocationState;
 
+use crate::windows::overlapped::PrivateOverlapped;
 use crate::windows::path::win32_bool_result;
 
 #[inline(always)]
@@ -40,7 +40,9 @@ pub(crate) fn allocation_state(file: &File) -> Result<AllocationState> {
     allocation_state_result(ret, info)
 }
 
+#[cfg(test)]
 pub(crate) const ALLOCATE_SPACE_EXTENDS_LENGTH: bool = true;
+#[cfg(test)]
 pub(crate) const ALWAYS_RESERVE_RANGE: bool = true;
 
 pub(crate) fn allocation_state_result(
@@ -109,6 +111,7 @@ pub(crate) fn allocate(file: &File, len: u64) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn allocate_space(file: &File, _state: AllocationState, len: u64) -> Result<()> {
     allocate(file, len)
 }
@@ -229,31 +232,6 @@ fn file_attributes_and_state(file: &File) -> Result<(u32, AllocationState)> {
     Ok((info.FileAttributes, allocation_state(file)?))
 }
 
-struct Event(HANDLE);
-
-impl Event {
-    fn new() -> Result<Self> {
-        let handle = unsafe {
-            // SAFETY: null security attributes make the unnamed event non-inheritable.
-            CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())
-        };
-        if handle.is_null() {
-            Err(Error::last_os_error())
-        } else {
-            Ok(Self(handle))
-        }
-    }
-}
-
-impl Drop for Event {
-    fn drop(&mut self) {
-        unsafe {
-            // SAFETY: this object exclusively owns the event handle.
-            CloseHandle(self.0);
-        }
-    }
-}
-
 unsafe fn overlapped_device_io_control(
     file: &File,
     control_code: u32,
@@ -262,11 +240,7 @@ unsafe fn overlapped_device_io_control(
     output: *mut std::ffi::c_void,
     output_len: u32,
 ) -> std::result::Result<u32, (Error, u32)> {
-    let event = Event::new().map_err(|error| (error, 0))?;
-    let mut overlapped = OVERLAPPED {
-        hEvent: event.0,
-        ..OVERLAPPED::default()
-    };
+    let mut overlapped = PrivateOverlapped::new().map_err(|error| (error, 0))?;
     let mut returned = 0;
     let result = unsafe {
         // SAFETY: the caller keeps both buffers valid until this helper returns,
@@ -279,7 +253,7 @@ unsafe fn overlapped_device_io_control(
             output,
             output_len,
             &mut returned,
-            &mut overlapped,
+            overlapped.state_mut(),
         )
     };
     if result != 0 {
@@ -294,7 +268,7 @@ unsafe fn overlapped_device_io_control(
     let result = unsafe {
         // SAFETY: the file, OVERLAPPED state, event, and caller-owned buffers
         // remain valid while this waits for the pending operation to complete.
-        GetOverlappedResult(file.as_raw_handle(), &overlapped, &mut returned, 1)
+        GetOverlappedResult(file.as_raw_handle(), overlapped.state(), &mut returned, 1)
     };
     if result == 0 {
         Err((Error::last_os_error(), returned))

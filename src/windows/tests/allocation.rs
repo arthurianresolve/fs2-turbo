@@ -8,6 +8,7 @@ use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_SPARSE_FILE, FILE_F
 use windows_sys::Win32::System::IO::DeviceIoControl;
 use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
 
+use super::CompletionPort;
 use crate::FileExt;
 
 fn mark_sparse(file: &fs::File) {
@@ -89,8 +90,10 @@ fn allocation_on_overlapped_sparse_file_waits_for_device_controls() {
         .custom_flags(FILE_FLAG_OVERLAPPED)
         .open(path)
         .unwrap();
+    let completion_port = CompletionPort::associate(&file);
 
     file.allocate(REQUESTED_ALLOCATION).unwrap();
+    completion_port.assert_empty();
 
     let metadata = file.metadata().unwrap();
     assert_eq!(metadata.len(), FILE_LENGTH);
