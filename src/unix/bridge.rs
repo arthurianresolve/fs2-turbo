@@ -38,3 +38,4 @@ pub(crate) fn total_space(path: &std::path::Path) -> std::io::Result<u64> {
 pub(crate) fn allocation_granularity(path: &std::path::Path) -> std::io::Result<u64> {
     stats::space(path, crate::stats::SpaceKind::AllocationGranularity)
 }
+pub(crate) use self::stats::StatsQuery;
