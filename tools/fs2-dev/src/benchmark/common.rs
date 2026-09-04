@@ -396,7 +396,7 @@ pub(crate) fn repository_state(
             path.display()
         )));
     }
-    let commit = git_text(path, ["rev-parse", "HEAD"], "resolve checkout commit")?;
+    let commit = head_commit(path, "resolve checkout commit")?;
     let ignored = git_output(
         path,
         [
@@ -408,6 +408,12 @@ pub(crate) fn repository_state(
         ],
         "inspect ignored checkout material",
     )?;
+    let observed_commit = head_commit(path, "recheck checkout commit")?;
+    if observed_commit != commit {
+        return Err(invalid_data(format!(
+            "{label} HEAD changed while checkout status was inspected: {commit} -> {observed_commit}"
+        )));
+    }
     if ignored
         .stdout
         .split(|byte| *byte == 0)
@@ -418,7 +424,7 @@ pub(crate) fn repository_state(
             path.display()
         )));
     }
-    Ok((repository, commit.trim().to_owned()))
+    Ok((repository, commit))
 }
 
 pub(crate) fn resolve_ref(repo: &Path, revision: &str) -> Result<String> {
@@ -530,48 +536,78 @@ fn git_local_path(path: &Path) -> Result<std::ffi::OsString> {
     Ok(path)
 }
 
-pub(crate) fn tree_digest(path: &Path) -> Result<String> {
-    let mut entries = Vec::new();
-    let mut walker = WalkDir::new(path).follow_links(false).into_iter();
-    while let Some(entry) = walker.next() {
-        let entry = entry?;
-        if !included_entry(path, &entry) {
-            if entry.file_type().is_dir() {
-                walker.skip_current_dir();
-            }
-            continue;
+#[derive(Clone, Copy)]
+enum TreeDigestMetadata {
+    Exact,
+    Publication,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RetainedTreeEntryKind {
+    Directory,
+    File,
+    Other,
+}
+
+struct RetainedTreeEntry {
+    path: PathBuf,
+    relative: PathBuf,
+    metadata: fs::Metadata,
+    kind: RetainedTreeEntryKind,
+    file: Option<File>,
+}
+
+struct RetainedLiveTree {
+    entries: Vec<RetainedTreeEntry>,
+    _lexical_root_guard: DirectoryGuard,
+    _resolved_root_guard: DirectoryGuard,
+    _nested_directory_guards: Vec<DirectoryGuard>,
+}
+
+impl RetainedLiveTree {
+    fn validate(&self, label: &str) -> Result<()> {
+        for entry in &self.entries {
+            validate_retained_tree_entry(entry, label)?;
         }
-        if entry.file_type().is_symlink() || tree_entry_is_windows_reparse_point(entry.path())? {
-            return Err(invalid_data(format!(
-                "tree digest rejects links and reparse points: {}",
-                entry.path().display()
-            )));
-        }
-        entries.push(entry);
+        Ok(())
     }
-    entries.sort_by_key(|entry| entry.path().to_owned());
+}
+
+pub(crate) fn tree_digest(path: &Path) -> Result<String> {
+    tree_digest_with_metadata(path, TreeDigestMetadata::Exact)
+}
+
+pub(crate) fn publication_tree_digest(path: &Path) -> Result<String> {
+    tree_digest_with_metadata(path, TreeDigestMetadata::Publication)
+}
+
+fn tree_digest_with_metadata(path: &Path, metadata_policy: TreeDigestMetadata) -> Result<String> {
+    let mut tree = retain_live_tree(path, "tree digest source")?;
+    tree.entries
+        .sort_by(|left, right| left.path.cmp(&right.path));
     let mut digest = Sha256::new();
     digest.update(b"fs2-tree-digest-v2\0");
-    for entry in entries {
-        let relative = entry.path().strip_prefix(path)?;
-        if relative.as_os_str().is_empty() {
+    for entry in &tree.entries {
+        if entry.relative.as_os_str().is_empty() {
             continue;
         }
-        if entry.file_type().is_dir() {
+        if entry.kind == RetainedTreeEntryKind::Directory {
             digest.update(b"D");
-            update_path_digest(&mut digest, relative)?;
-            update_metadata_digest(&mut digest, entry.path())?;
+            update_path_digest(&mut digest, &entry.relative)?;
+            update_metadata_digest(&mut digest, &entry.metadata, metadata_policy)?;
             continue;
         }
-        if !entry.file_type().is_file() || entry.path().extension() == Some(OsStr::new("pyc")) {
+        if entry.kind != RetainedTreeEntryKind::File
+            || entry.path.extension() == Some(OsStr::new("pyc"))
+        {
             continue;
         }
         digest.update(b"F");
-        update_path_digest(&mut digest, relative)?;
-        update_metadata_digest(&mut digest, entry.path())?;
-        let metadata = fs::metadata(entry.path())?;
+        update_path_digest(&mut digest, &entry.relative)?;
+        let (file, metadata) = open_retained_tree_file(entry, "tree digest source")?;
+        update_metadata_digest(&mut digest, &metadata, metadata_policy)?;
         digest.update(metadata.len().to_le_bytes());
-        let mut reader = BufReader::new(File::open(entry.path())?);
+        let mut reader = BufReader::new(file);
         let mut buffer = [0u8; 64 * 1024];
         loop {
             let read = reader.read(&mut buffer)?;
@@ -580,33 +616,283 @@ pub(crate) fn tree_digest(path: &Path) -> Result<String> {
             }
             digest.update(&buffer[..read]);
         }
+        validate_open_retained_tree_file(entry, reader.get_ref(), "tree digest source")?;
     }
+    tree.validate("tree digest source")?;
     Ok(lower_hex(digest.finalize()))
 }
 
 #[cfg(windows)]
-fn tree_entry_is_windows_reparse_point(path: &Path) -> Result<bool> {
+fn tree_metadata_is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt as _;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    Ok(fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 #[cfg(not(windows))]
-fn tree_entry_is_windows_reparse_point(_path: &Path) -> Result<bool> {
-    Ok(false)
+fn tree_metadata_is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
+    false
 }
 
-fn update_metadata_digest(digest: &mut Sha256, path: &Path) -> Result<()> {
-    let metadata = fs::metadata(path)?;
+fn update_metadata_digest(
+    digest: &mut Sha256,
+    metadata: &fs::Metadata,
+    metadata_policy: TreeDigestMetadata,
+) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt as _;
-        digest.update(metadata.mode().to_le_bytes());
+        const USER_EXECUTE: u32 = 0o100;
+        const FILE_TYPE_MASK: u32 = 0o170000;
+
+        let source_mode = metadata.mode();
+        let mode = match metadata_policy {
+            TreeDigestMetadata::Exact => source_mode,
+            TreeDigestMetadata::Publication => {
+                let permissions = if metadata.is_dir() || source_mode & USER_EXECUTE != 0 {
+                    0o700
+                } else {
+                    0o600
+                };
+                (source_mode & FILE_TYPE_MASK) | permissions
+            }
+        };
+        digest.update(mode.to_le_bytes());
     }
+    #[cfg(not(unix))]
+    let _ = metadata_policy;
     #[cfg(not(unix))]
     digest.update([u8::from(metadata.permissions().readonly())]);
     Ok(())
+}
+
+fn retain_live_tree(path: &Path, label: &str) -> Result<RetainedLiveTree> {
+    let lexical_root = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    let lexical_root_guard = retain_canonical_directory_ancestry(&lexical_root, label)?;
+    let root = lexical_root.canonicalize()?;
+    let resolved_root_guard = retain_canonical_directory_ancestry(&root, label)?;
+    let mut nested_directory_guards = Vec::new();
+    let mut entries = Vec::new();
+    let mut walker = WalkDir::new(&root).follow_links(false).into_iter();
+    while let Some(entry) = walker.next() {
+        let entry = entry?;
+        if !included_entry(&root, &entry) {
+            if entry.file_type().is_dir() {
+                walker.skip_current_dir();
+            }
+            continue;
+        }
+        let relative = entry.path().strip_prefix(&root)?.to_owned();
+        let mut metadata = fs::symlink_metadata(entry.path())?;
+        ensure_safe_tree_entry(entry.path(), &metadata, label)?;
+        let kind = retained_tree_entry_kind(&metadata);
+        if kind != retained_dir_entry_kind(entry.file_type()) {
+            return Err(invalid_data(format!(
+                "{label} entry type changed during traversal: {}",
+                entry.path().display()
+            )));
+        }
+        if kind == RetainedTreeEntryKind::Directory && !relative.as_os_str().is_empty() {
+            let guard = retain_nested_live_tree_directory(entry.path(), label)?;
+            let guarded_metadata = fs::symlink_metadata(entry.path())?;
+            ensure_safe_tree_entry(entry.path(), &guarded_metadata, label)?;
+            if !tree_metadata_matches(&metadata, &guarded_metadata) {
+                return Err(invalid_data(format!(
+                    "{label} directory changed while its namespace was retained: {}",
+                    entry.path().display()
+                )));
+            }
+            metadata = guarded_metadata;
+            nested_directory_guards.push(guard);
+        }
+        let file = if kind == RetainedTreeEntryKind::File {
+            let file = open_live_tree_file(entry.path())?;
+            let opened_metadata = file.metadata()?;
+            ensure_safe_tree_entry(entry.path(), &opened_metadata, label)?;
+            if !tree_metadata_matches(&metadata, &opened_metadata) {
+                return Err(invalid_data(format!(
+                    "{label} file changed while its handle was retained: {}",
+                    entry.path().display()
+                )));
+            }
+            metadata = opened_metadata;
+            Some(file)
+        } else {
+            None
+        };
+        entries.push(RetainedTreeEntry {
+            path: entry.path().to_owned(),
+            relative,
+            metadata,
+            kind,
+            file,
+        });
+    }
+    let tree = RetainedLiveTree {
+        entries,
+        _lexical_root_guard: lexical_root_guard,
+        _resolved_root_guard: resolved_root_guard,
+        _nested_directory_guards: nested_directory_guards,
+    };
+    tree.validate(label)?;
+    Ok(tree)
+}
+
+#[cfg(any(unix, windows))]
+fn retain_nested_live_tree_directory(path: &Path, label: &str) -> Result<DirectoryGuard> {
+    let mut ancestry = retain_canonical_directory_ancestry(path, label)?;
+    let directory = ancestry.pop().ok_or_else(|| {
+        invalid_data(format!(
+            "{label} directory ancestry is empty: {}",
+            path.display()
+        ))
+    })?;
+    Ok(vec![directory])
+}
+
+#[cfg(not(any(unix, windows)))]
+fn retain_nested_live_tree_directory(path: &Path, label: &str) -> Result<DirectoryGuard> {
+    retain_canonical_directory_ancestry(path, label)
+}
+
+fn retained_tree_entry_kind(metadata: &fs::Metadata) -> RetainedTreeEntryKind {
+    if metadata.is_dir() {
+        RetainedTreeEntryKind::Directory
+    } else if metadata.is_file() {
+        RetainedTreeEntryKind::File
+    } else {
+        RetainedTreeEntryKind::Other
+    }
+}
+
+fn retained_dir_entry_kind(file_type: fs::FileType) -> RetainedTreeEntryKind {
+    if file_type.is_dir() {
+        RetainedTreeEntryKind::Directory
+    } else if file_type.is_file() {
+        RetainedTreeEntryKind::File
+    } else {
+        RetainedTreeEntryKind::Other
+    }
+}
+
+fn ensure_safe_tree_entry(path: &Path, metadata: &fs::Metadata, label: &str) -> Result<()> {
+    if metadata.file_type().is_symlink() || tree_metadata_is_windows_reparse_point(metadata) {
+        return Err(invalid_data(format!(
+            "{label} rejects links and reparse points: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_retained_tree_entry(entry: &RetainedTreeEntry, label: &str) -> Result<()> {
+    let metadata = fs::symlink_metadata(&entry.path)?;
+    ensure_safe_tree_entry(&entry.path, &metadata, label)?;
+    if entry.kind != retained_tree_entry_kind(&metadata)
+        || !tree_metadata_matches(&entry.metadata, &metadata)
+    {
+        return Err(invalid_data(format!(
+            "{label} entry changed during the operation: {}",
+            entry.path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_live_tree_file(path: &Path) -> Result<File> {
+    use std::os::unix::fs::OpenOptionsExt as _;
+
+    Ok(OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
+        .open(path)?)
+}
+
+#[cfg(windows)]
+fn open_live_tree_file(path: &Path) -> Result<File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+
+    Ok(OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_live_tree_file(path: &Path) -> Result<File> {
+    Ok(File::open(path)?)
+}
+
+fn open_retained_tree_file(entry: &RetainedTreeEntry, label: &str) -> Result<(File, fs::Metadata)> {
+    validate_retained_tree_entry(entry, label)?;
+    let file = entry
+        .file
+        .as_ref()
+        .ok_or_else(|| invalid_data(format!("{label} expected a retained file handle")))?
+        .try_clone()?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || !tree_metadata_matches(&entry.metadata, &metadata) {
+        return Err(invalid_data(format!(
+            "{label} file changed while it was opened: {}",
+            entry.path.display()
+        )));
+    }
+    validate_retained_tree_entry(entry, label)?;
+    Ok((file, metadata))
+}
+
+fn validate_open_retained_tree_file(
+    entry: &RetainedTreeEntry,
+    file: &File,
+    label: &str,
+) -> Result<()> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || !tree_metadata_matches(&entry.metadata, &metadata) {
+        return Err(invalid_data(format!(
+            "{label} file changed while it was read: {}",
+            entry.path.display()
+        )));
+    }
+    validate_retained_tree_entry(entry, label)
+}
+
+#[cfg(unix)]
+fn tree_metadata_matches(expected: &fs::Metadata, observed: &fs::Metadata) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+
+    retained_tree_entry_kind(expected) == retained_tree_entry_kind(observed)
+        && expected.dev() == observed.dev()
+        && expected.ino() == observed.ino()
+        && expected.mode() == observed.mode()
+        && expected.len() == observed.len()
+        && expected.mtime() == observed.mtime()
+        && expected.mtime_nsec() == observed.mtime_nsec()
+        && expected.ctime() == observed.ctime()
+        && expected.ctime_nsec() == observed.ctime_nsec()
+}
+
+#[cfg(windows)]
+fn tree_metadata_matches(expected: &fs::Metadata, observed: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt as _;
+
+    retained_tree_entry_kind(expected) == retained_tree_entry_kind(observed)
+        && expected.file_attributes() == observed.file_attributes()
+        && expected.creation_time() == observed.creation_time()
+        && expected.last_write_time() == observed.last_write_time()
+        && expected.file_size() == observed.file_size()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn tree_metadata_matches(_expected: &fs::Metadata, _observed: &fs::Metadata) -> bool {
+    false
 }
 
 fn update_path_digest(digest: &mut Sha256, path: &Path) -> Result<()> {
@@ -658,30 +944,29 @@ pub(crate) fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
             destination.display()
         )));
     }
-    for entry in WalkDir::new(source)
-        .into_iter()
-        .filter_entry(|entry| included_entry(source, entry))
-    {
-        let entry = entry?;
-        let relative = entry.path().strip_prefix(source)?;
-        let target = destination.join(relative);
-        if entry.file_type().is_dir() {
+    let tree = retain_live_tree(source, "benchmark staging source")?;
+    for entry in &tree.entries {
+        let target = destination.join(&entry.relative);
+        if entry.kind == RetainedTreeEntryKind::Directory {
             fs::create_dir_all(&target)?;
-        } else if entry.file_type().is_file() && entry.path().extension() != Some(OsStr::new("pyc"))
+        } else if entry.kind == RetainedTreeEntryKind::File
+            && entry.path.extension() != Some(OsStr::new("pyc"))
         {
             if let Some(parent) = target.parent() {
                 fs::create_dir_all(parent)?;
             }
-            fs::copy(entry.path(), &target)?;
-            fs::set_permissions(&target, fs::metadata(entry.path())?.permissions())?;
-        } else if entry.file_type().is_symlink() {
-            return Err(invalid_data(format!(
-                "benchmark staging does not follow symlinks: {}",
-                entry.path().display()
-            )));
+            let (mut source_file, source_metadata) =
+                open_retained_tree_file(entry, "benchmark staging source")?;
+            let mut target_file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            std::io::copy(&mut source_file, &mut target_file)?;
+            fs::set_permissions(&target, source_metadata.permissions())?;
+            validate_open_retained_tree_file(entry, &source_file, "benchmark staging source")?;
         }
     }
-    Ok(())
+    tree.validate("benchmark staging source")
 }
 
 fn included_entry(root: &Path, entry: &DirEntry) -> bool {
@@ -728,6 +1013,59 @@ pub(crate) fn prepare_harness(
     let rewritten = rewrite_subject_dependency(&text, &replacement)?;
     fs::write(&manifest, format!("{rewritten}\n[workspace]\n"))?;
     Ok(manifest)
+}
+
+pub(crate) fn subject_package_name(repository: &Path) -> Result<String> {
+    let manifest = repository.join("Cargo.toml");
+    let metadata = fs::symlink_metadata(&manifest)?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(invalid_data(format!(
+            "subject Cargo.toml must be a regular file: {}",
+            manifest.display()
+        )));
+    }
+
+    let contents = fs::read_to_string(&manifest)?;
+    let mut section = "";
+    let mut package_name = None;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            section = trimmed;
+            continue;
+        }
+        if section != "[package]" {
+            continue;
+        }
+        let Some((key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if key.trim() != "name" {
+            continue;
+        }
+        if package_name.is_some() {
+            return Err(invalid_data(format!(
+                "subject Cargo.toml declares package.name more than once: {}",
+                manifest.display()
+            )));
+        }
+        package_name = Some(match value.trim() {
+            "\"fs2\"" => "fs2".to_owned(),
+            "\"fs2-turbo\"" => "fs2-turbo".to_owned(),
+            unsupported => {
+                return Err(invalid_data(format!(
+                    "unsupported subject package name {unsupported}: {}",
+                    manifest.display()
+                )));
+            }
+        });
+    }
+    package_name.ok_or_else(|| {
+        invalid_data(format!(
+            "subject Cargo.toml does not declare package.name: {}",
+            manifest.display()
+        ))
+    })
 }
 
 fn rewrite_subject_dependency(manifest: &str, replacement: &str) -> Result<String> {
@@ -999,19 +1337,35 @@ fn git_text<const N: usize>(repo: &Path, arguments: [&str; N], label: &str) -> R
     Ok(String::from_utf8(output.stdout)?)
 }
 
-fn git_output<const N: usize>(
+fn head_commit(repo: &Path, label: &str) -> Result<String> {
+    git_text(repo, ["rev-parse", "--verify", "HEAD^{commit}"], label)
+        .map(|value| value.trim().to_owned())
+}
+
+fn configure_git_output(command: &mut Command) {
+    enable_git_long_paths(command);
+    command.args([
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "core.untrackedCache=false",
+    ]);
+    command.env("GIT_OPTIONAL_LOCKS", "0");
+}
+
+pub(crate) fn git_output<const N: usize>(
     repo: &Path,
     arguments: [&str; N],
     label: &str,
 ) -> Result<std::process::Output> {
-    let output = process::capture(
-        Command::new("git")
-            .current_dir(repo)
-            .arg("-C")
-            .arg(repo)
-            .args(arguments),
-        label,
-    )?;
+    let mut command = Command::new("git");
+    configure_git_output(&mut command);
+    command
+        .current_dir(repo)
+        .arg("-C")
+        .arg(repo)
+        .args(arguments);
+    let output = process::capture(&mut command, label)?;
     Ok(output)
 }
 
@@ -1117,8 +1471,8 @@ mod tests {
 
     #[test]
     fn tree_digest_includes_directory_topology() {
-        let left = tempfile::tempdir().unwrap();
-        let right = tempfile::tempdir().unwrap();
+        let left = test_tempdir();
+        let right = test_tempdir();
         fs::write(left.path().join("file"), b"same").unwrap();
         fs::write(right.path().join("file"), b"same").unwrap();
         fs::create_dir(left.path().join("empty")).unwrap();
@@ -1129,18 +1483,48 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn publication_tree_digest_predicts_hardened_permissions() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tree = tempfile::tempdir().unwrap();
+        let directory = tree.path().join("directory");
+        fs::create_dir(&directory).unwrap();
+        let executable = directory.join("executable");
+        let data = directory.join("data");
+        fs::write(&executable, b"executable").unwrap();
+        fs::write(&data, b"data").unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let exact_before = tree_digest(tree.path()).unwrap();
+        let predicted = publication_tree_digest(tree.path()).unwrap();
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&data, fs::Permissions::from_mode(0o600)).unwrap();
+        let exact_after = tree_digest(tree.path()).unwrap();
+
+        assert_ne!(exact_before, exact_after);
+        assert_eq!(predicted, exact_after);
+    }
+
     #[cfg(any(unix, windows))]
     #[test]
-    fn tree_digest_rejects_links_and_reparse_points() {
+    fn tree_operations_reject_nested_links_and_reparse_points() {
         let tree = tempfile::tempdir().unwrap();
         let external = tempfile::tempdir().unwrap();
+        let nested = tree.path().join("nested");
+        fs::create_dir(&nested).unwrap();
+        let link = nested.join("link");
         #[cfg(unix)]
-        std::os::unix::fs::symlink(external.path(), tree.path().join("link")).unwrap();
+        std::os::unix::fs::symlink(external.path(), &link).unwrap();
         #[cfg(windows)]
         {
             let status = Command::new("cmd")
                 .args(["/c", "mklink", "/J"])
-                .arg(tree.path().join("link"))
+                .arg(&link)
                 .arg(external.path())
                 .status()
                 .unwrap();
@@ -1148,6 +1532,49 @@ mod tests {
         }
 
         assert!(tree_digest(tree.path()).is_err());
+        let destination = tree.path().join("copy");
+        assert!(copy_tree(tree.path(), &destination).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_operations_reject_lower_trust_writable_nested_directories() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let workspace = test_tempdir();
+        let source = workspace.path().join("source");
+        let nested = source.join("nested");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("file"), "contents\n").unwrap();
+        fs::set_permissions(&nested, fs::Permissions::from_mode(0o777)).unwrap();
+
+        assert!(tree_digest(&source).is_err());
+        assert!(copy_tree(&source, &workspace.path().join("copy")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_tree_rejects_a_raced_nested_namespace() {
+        let workspace = test_tempdir();
+        let source = workspace.path().join("source");
+        let nested = source.join("nested");
+        let external = workspace.path().join("external");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir(&external).unwrap();
+        fs::write(nested.join("file"), "original\n").unwrap();
+        fs::write(external.join("file"), "replacement\n").unwrap();
+        let retained = retain_live_tree(&source, "test live tree").unwrap();
+        let file = retained
+            .entries
+            .iter()
+            .find(|entry| entry.relative == Path::new("nested/file"))
+            .unwrap();
+
+        fs::remove_dir_all(&nested).unwrap();
+        std::os::unix::fs::symlink(&external, &nested).unwrap();
+
+        assert!(open_retained_tree_file(file, "test live tree").is_err());
+        assert!(retained.validate("test live tree").is_err());
     }
 
     #[test]
@@ -1161,6 +1588,24 @@ mod tests {
             .unwrap(),
             "[dependencies]\nfs2 = { path = \"subject\" }"
         );
+    }
+
+    #[test]
+    fn subject_package_name_requires_a_supported_root_package() {
+        let source = test_tempdir();
+        fs::write(
+            source.path().join("Cargo.toml"),
+            "[package]\nname = \"fs2-turbo\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        assert_eq!(subject_package_name(source.path()).unwrap(), "fs2-turbo");
+
+        fs::write(
+            source.path().join("Cargo.toml"),
+            "[package]\nname = \"other\"\nversion = \"1.0.0\"\n",
+        )
+        .unwrap();
+        assert!(subject_package_name(source.path()).is_err());
     }
 
     #[test]
@@ -1365,6 +1810,65 @@ mod tests {
         assert!(repository_state(ignored_pyc.path(), "repo", false).is_ok());
     }
 
+    #[test]
+    fn git_output_disables_repository_status_accelerators() {
+        let mut command = Command::new("git");
+        configure_git_output(&mut command);
+        let arguments = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(arguments.ends_with(&[
+            "-c".to_owned(),
+            "core.fsmonitor=false".to_owned(),
+            "-c".to_owned(),
+            "core.untrackedCache=false".to_owned(),
+        ]));
+    }
+
+    #[test]
+    fn repository_state_does_not_execute_configured_fsmonitor() {
+        let repo = test_tempdir();
+        git(repo.path(), &["init", "--quiet"]);
+        fs::write(
+            repo.path().join("Cargo.toml"),
+            "[package]\nname = \"fs2-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let hook = repo.path().join("fsmonitor-test-hook");
+        fs::write(&hook, "#!/bin/sh\nprintf invoked > fsmonitor-was-invoked\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        git(repo.path(), &["add", "Cargo.toml", "fsmonitor-test-hook"]);
+        git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=Codex",
+                "-c",
+                "user.email=codex@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "init",
+            ],
+        );
+        git(
+            repo.path(),
+            &["config", "core.fsmonitor", "./fsmonitor-test-hook"],
+        );
+        git(repo.path(), &["config", "core.untrackedCache", "true"]);
+
+        let state = repository_state(repo.path(), "repo", false);
+
+        assert!(state.is_ok(), "{state:?}");
+        assert!(!repo.path().join("fsmonitor-was-invoked").exists());
+    }
+
     #[cfg(windows)]
     #[test]
     fn strict_repository_state_rejects_unc_before_git_access() {
@@ -1431,118 +1935,14 @@ mod tests {
         assert_eq!(resolve_ref(&destination, "HEAD").unwrap(), revision);
         assert!(!destination.join("build.rs").exists());
     }
-}
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum RetainedTreeEntryKind {
-    Directory,
-    File,
-    Other,
-}
-
-#[cfg(windows)]
-fn tree_metadata_is_windows_reparse_point(metadata: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
-
-    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn tree_metadata_is_windows_reparse_point(_metadata: &fs::Metadata) -> bool {
-    false
-}
-
-fn retained_tree_entry_kind(metadata: &fs::Metadata) -> RetainedTreeEntryKind {
-    if metadata.is_dir() {
-        RetainedTreeEntryKind::Directory
-    } else if metadata.is_file() {
-        RetainedTreeEntryKind::File
-    } else {
-        RetainedTreeEntryKind::Other
+    #[cfg(windows)]
+    fn test_tempdir() -> tempfile::TempDir {
+        super::super::windows_security::private_test_tempdir()
     }
-}
 
-fn ensure_safe_tree_entry(path: &Path, metadata: &fs::Metadata, label: &str) -> Result<()> {
-    if metadata.file_type().is_symlink() || tree_metadata_is_windows_reparse_point(metadata) {
-        return Err(invalid_data(format!(
-            "{label} rejects links and reparse points: {}",
-            path.display()
-        )));
+    #[cfg(not(windows))]
+    fn test_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
     }
-    Ok(())
-}
-
-#[cfg(unix)]
-fn open_live_tree_file(path: &Path) -> Result<File> {
-    use std::os::unix::fs::OpenOptionsExt as _;
-
-    Ok(OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(path)?)
-}
-
-#[cfg(windows)]
-fn open_live_tree_file(path: &Path) -> Result<File> {
-    use std::os::windows::fs::OpenOptionsExt as _;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
-
-    Ok(OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(path)?)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn open_live_tree_file(path: &Path) -> Result<File> {
-    Ok(File::open(path)?)
-}
-
-#[cfg(unix)]
-fn tree_metadata_matches(expected: &fs::Metadata, observed: &fs::Metadata) -> bool {
-    use std::os::unix::fs::MetadataExt as _;
-
-    retained_tree_entry_kind(expected) == retained_tree_entry_kind(observed)
-        && expected.dev() == observed.dev()
-        && expected.ino() == observed.ino()
-        && expected.mode() == observed.mode()
-        && expected.len() == observed.len()
-        && expected.mtime() == observed.mtime()
-        && expected.mtime_nsec() == observed.mtime_nsec()
-        && expected.ctime() == observed.ctime()
-        && expected.ctime_nsec() == observed.ctime_nsec()
-}
-
-#[cfg(windows)]
-fn tree_metadata_matches(expected: &fs::Metadata, observed: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt as _;
-
-    retained_tree_entry_kind(expected) == retained_tree_entry_kind(observed)
-        && expected.file_attributes() == observed.file_attributes()
-        && expected.creation_time() == observed.creation_time()
-        && expected.last_write_time() == observed.last_write_time()
-        && expected.file_size() == observed.file_size()
-}
-
-#[cfg(not(any(unix, windows)))]
-fn tree_metadata_matches(_expected: &fs::Metadata, _observed: &fs::Metadata) -> bool {
-    false
-}
-
-fn head_commit(repo: &Path, label: &str) -> Result<String> {
-    git_text(repo, ["rev-parse", "--verify", "HEAD^{commit}"], label)
-        .map(|value| value.trim().to_owned())
-}
-
-fn configure_git_output(command: &mut Command) {
-    enable_git_long_paths(command);
-    command.args([
-        "-c",
-        "core.fsmonitor=false",
-        "-c",
-        "core.untrackedCache=false",
-    ]);
-    command.env("GIT_OPTIONAL_LOCKS", "0");
 }

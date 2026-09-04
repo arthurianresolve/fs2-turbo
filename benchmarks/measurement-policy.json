@@ -1,0 +1,36 @@
+{
+  "schema_version": 6,
+  "non_inferiority_margin": 0.02,
+  "resources": {
+    "minimum_free_bytes": 8589934592
+  },
+  "criterion": {
+    "sample_size": 50,
+    "warm_up_seconds": 2,
+    "measurement_seconds": 5,
+    "max_outlier_fraction": 0.30
+  },
+  "ref_to_ref": {
+    "blocks": 8,
+    "minimum_blocks": 8,
+    "maximum_blocks": 64,
+    "position_replicates": 3,
+    "max_pair_spread": 0.20,
+    "cooldown_seconds": 10.0,
+    "pair_orders": [
+      ["A", "B", "B", "A"],
+      ["B", "A", "A", "B"]
+    ]
+  },
+  "cross_crate": {
+    "pairs": 24,
+    "maximum_pairs": 128,
+    "pair_order": ["A", "B", "A", "B"]
+  },
+  "paired_process": {
+    "confidence": 0.95,
+    "process_replicates": 8,
+    "cooldown_seconds": 10.0,
+    "aa_control": true
+  }
+}

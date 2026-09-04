@@ -295,7 +295,9 @@ pub(super) fn windows_stats_workload(workload: &str) -> bool {
         matches!(
             component,
             "free_space"
+                | "free_space_file_fallback"
                 | "available_space"
+                | "available_space_file_fallback"
                 | "total_space"
                 | "allocation_granularity"
                 | "stats_snapshot"
@@ -825,7 +827,9 @@ mod tests {
     fn windows_statistics_classification_covers_shared_harnesses() {
         for metric in [
             "free_space",
+            "free_space_file_fallback",
             "available_space",
+            "available_space_file_fallback",
             "total_space",
             "allocation_granularity",
             "stats_snapshot",

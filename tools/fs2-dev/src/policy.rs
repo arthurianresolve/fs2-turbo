@@ -62,6 +62,7 @@ impl MeasurementPolicy {
 
     pub(crate) fn meets_strict_paired_profile(&self) -> bool {
         self.non_inferiority_margin <= STRICT_NON_INFERIORITY_MARGIN
+            && self.aa_equivalence_margin() <= STRICT_NON_INFERIORITY_MARGIN
             && self.criterion.sample_size >= STRICT_SAMPLE_SIZE
             && self.criterion.warm_up_seconds >= STRICT_WARM_UP_SECONDS
             && self.criterion.measurement_seconds >= STRICT_MEASUREMENT_SECONDS
@@ -70,6 +71,12 @@ impl MeasurementPolicy {
             && self.paired_process.process_replicates >= STRICT_PAIRED_REPLICATES
             && self.paired_process.cooldown_seconds >= STRICT_COOLDOWN_SECONDS
             && self.paired_process.aa_control
+    }
+
+    pub(crate) fn aa_equivalence_margin(&self) -> f64 {
+        self.paired_process
+            .aa_equivalence_margin
+            .unwrap_or(self.non_inferiority_margin)
     }
 }
 
@@ -134,6 +141,8 @@ pub(crate) struct CrossCratePolicy {
 #[serde(deny_unknown_fields)]
 pub(crate) struct PairedProcessPolicy {
     pub(crate) confidence: f64,
+    #[serde(default)]
+    pub(crate) aa_equivalence_margin: Option<f64>,
     pub(crate) process_replicates: u64,
     pub(crate) cooldown_seconds: f64,
     pub(crate) aa_control: bool,
@@ -164,6 +173,10 @@ fn validate(policy: MeasurementPolicy) -> Result<MeasurementPolicy> {
         return Err(invalid_data("measurement policy schema_version must be 6"));
     }
     fraction("non_inferiority_margin", policy.non_inferiority_margin)?;
+    fraction(
+        "paired_process.aa_equivalence_margin",
+        policy.aa_equivalence_margin(),
+    )?;
     minimum("sample_size", policy.criterion.sample_size, 10)?;
     maximum("sample_size", policy.criterion.sample_size, MAX_SAMPLE_SIZE)?;
     fraction(
@@ -427,6 +440,7 @@ mod tests {
             },
             paired_process: PairedProcessPolicy {
                 confidence: 0.95,
+                aa_equivalence_margin: None,
                 process_replicates: 8,
                 cooldown_seconds: 10.0,
                 aa_control: true,
@@ -440,6 +454,37 @@ mod tests {
             validate_path(&crate::repository_root().join("benchmarks/measurement-policy.json"))
                 .unwrap();
         assert!(policy.meets_strict_paired_profile());
+        assert_eq!(
+            policy.aa_equivalence_margin(),
+            policy.non_inferiority_margin
+        );
+    }
+
+    #[test]
+    fn duplicate_policy_separates_equivalence_from_non_inferiority() {
+        let policy = validate_path(
+            &crate::repository_root().join("benchmarks/duplicate-measurement-policy.json"),
+        )
+        .unwrap();
+        assert!(policy.meets_strict_paired_profile());
+        assert_eq!(policy.non_inferiority_margin, 0.02);
+        assert_eq!(policy.aa_equivalence_margin(), 0.01);
+        assert_eq!(policy.paired_process.process_replicates, 16);
+        assert_eq!(policy.criterion.sample_size, 50);
+        assert_eq!(policy.criterion.measurement_seconds, 20.0);
+        assert_eq!(policy.criterion.max_outlier_fraction, 0.30);
+    }
+
+    #[test]
+    fn rejects_invalid_aa_equivalence_margins() {
+        for margin in [-0.01, 1.0, f64::NAN, f64::INFINITY] {
+            let mut policy = valid_policy();
+            policy.paired_process.aa_equivalence_margin = Some(margin);
+            assert!(validate(policy).is_err());
+        }
+        let mut policy = valid_policy();
+        policy.paired_process.aa_equivalence_margin = Some(0.03);
+        assert!(!validate(policy).unwrap().meets_strict_paired_profile());
     }
 
     #[test]

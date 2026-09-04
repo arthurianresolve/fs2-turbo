@@ -100,6 +100,7 @@ impl Serialize for SetupProcesses<'_> {
 #[derive(Serialize)]
 pub(super) struct SetupFailureReport<'a> {
     pub(super) decision: &'static str,
+    pub(super) profile: &'static str,
     pub(super) environment: EnvironmentSnapshot,
     #[serde(serialize_with = "serialize_sanitized")]
     pub(super) baseline_source: &'a str,
@@ -132,9 +133,15 @@ pub(super) struct SetupFailureReport<'a> {
 
 #[derive(Serialize)]
 pub(super) struct StatsMethod {
+    pub(super) profile: &'static str,
     pub(super) name: &'static str,
     pub(super) reason: &'static str,
+    pub(super) operations_per_timed_interval: u64,
+    pub(super) diagnostic_samples: bool,
+    pub(super) host_admission_sha256: Option<String>,
+    pub(super) noise_report_sha256: String,
     pub(super) non_regression_margin: f64,
+    pub(super) aa_equivalence_margin: f64,
     pub(super) confidence: f64,
     pub(super) process_replicates: usize,
     pub(super) sample_size: usize,
@@ -243,6 +250,7 @@ pub(super) struct StatsReport<'a> {
 #[derive(Serialize)]
 pub(super) struct StatsInvalidContext<'a> {
     pub(super) decision: &'static str,
+    pub(super) profile: &'static str,
     pub(super) environment: Option<EnvironmentSnapshot>,
     #[serde(serialize_with = "serialize_sanitized")]
     pub(super) baseline_ref: &'a str,
@@ -311,6 +319,7 @@ mod tests {
         let fixture = private_path("private-fixture");
         let context = StatsInvalidContext {
             decision: "invalid-execution",
+            profile: "test-profile",
             environment: None,
             baseline_ref: r"C:\Users\sentinel-user\private-ref",
             candidate_ref: "candidate",

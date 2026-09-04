@@ -1,0 +1,39 @@
+[package]
+name = "fs2-benchmarks"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88.0"
+publish = false
+
+[features]
+default = ["subject-fs2"]
+paired-tools = []
+subject-fs2 = []
+subject-fs4 = []
+
+[dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+fs2 = { path = ".." }
+tempfile = "3.27"
+
+[[bin]]
+name = "fs2-paired-lock"
+path = "paired_lock.rs"
+required-features = ["paired-tools"]
+
+[[bin]]
+name = "fs2-paired-stats-smoke"
+path = "paired_stats_smoke.rs"
+required-features = ["paired-tools"]
+
+[[bench]]
+name = "fs2"
+harness = false
+
+[[bench]]
+name = "fs2_legacy"
+harness = false
+
+[[bench]]
+name = "fs_compat"
+harness = false

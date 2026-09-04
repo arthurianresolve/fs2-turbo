@@ -68,6 +68,7 @@ struct CrateMetadata<'a> {
     baseline_tree_sha256: &'a str,
     candidate_tree_sha256: &'a str,
     workload_sha256: String,
+    benchmark_harness_sha256: String,
     measurement_policy_sha256: String,
     benchmark: &'a str,
     filter: Option<&'a str>,
@@ -128,6 +129,7 @@ struct CrateRunSpec<'a> {
     settings: CriterionSettings,
     margin: f64,
     allow_different_locks: bool,
+    explicitly_exploratory: bool,
     live_sources: bool,
     pair_order: &'a [PairSubject; 4],
     policy_path: &'a Path,
@@ -198,9 +200,6 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
         margin != policy.non_inferiority_margin,
         "non-inferiority margin differs from the measurement policy",
     )?;
-    if allow_different_locks {
-        evidence_mode.weaken("baseline and candidate lockfiles may differ");
-    }
     common::require_strict_windows_local_volume(
         root,
         "strict cross-crate benchmark repository root",
@@ -265,6 +264,7 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
         settings,
         margin,
         allow_different_locks,
+        explicitly_exploratory,
         live_sources: explicitly_exploratory,
         pair_order: &policy.cross_crate.pair_order,
         policy_path: &policy_path,
@@ -519,6 +519,20 @@ impl PairRunner<'_> {
     }
 }
 
+fn require_different_lockfiles_exploratory(
+    evidence_mode: &mut EvidenceMode,
+    explicitly_exploratory: bool,
+    allow_different_locks: bool,
+    lockfiles_differ: bool,
+) -> Result<()> {
+    require_exploratory(
+        evidence_mode,
+        explicitly_exploratory,
+        allow_different_locks && lockfiles_differ,
+        "baseline and candidate resolved different dependency lockfiles",
+    )
+}
+
 fn execute(spec: CrateRunSpec<'_>) -> Result<()> {
     let CrateRunSpec {
         root,
@@ -534,6 +548,7 @@ fn execute(spec: CrateRunSpec<'_>) -> Result<()> {
         settings,
         margin,
         allow_different_locks,
+        explicitly_exploratory,
         live_sources,
         pair_order,
         policy_path,
@@ -725,20 +740,28 @@ fn execute(spec: CrateRunSpec<'_>) -> Result<()> {
         candidate_lock.as_deref(),
         artifact_root.join("locks/candidate.Cargo.lock"),
     )?;
-    if baseline_lock != candidate_lock && !allow_different_locks {
+    let lockfiles_differ = match (&baseline_lock, &candidate_lock) {
+        (Some(baseline), Some(candidate)) => baseline != candidate,
+        _ => false,
+    };
+    require_different_lockfiles_exploratory(
+        &mut evidence_mode,
+        explicitly_exploratory,
+        allow_different_locks,
+        lockfiles_differ,
+    )?;
+    if lockfiles_differ && !allow_different_locks {
         anomalies.push("baseline and candidate resolved different dependency lockfiles".to_owned());
     }
 
-    if evidence_mode.strict {
-        for ((subject, _), harness) in &harnesses {
-            common::validate_path_dependencies(
-                root,
-                root,
-                &harness.manifest,
-                subject.features(&baseline_features, &candidate_features),
-                &[subject.source(&baseline_source, &candidate_source)],
-            )?;
-        }
+    for ((subject, _), harness) in &harnesses {
+        common::validate_path_dependencies(
+            root,
+            root,
+            &harness.manifest,
+            subject.features(&baseline_features, &candidate_features),
+            &[subject.source(&baseline_source, &candidate_source)],
+        )?;
     }
 
     for ((subject, slot), harness) in &mut harnesses {
@@ -1018,6 +1041,7 @@ fn execute(spec: CrateRunSpec<'_>) -> Result<()> {
                             .join("benches")
                             .join(format!("{benchmark}.rs")),
                     )?,
+                    benchmark_harness_sha256: common::publication_tree_digest(benchmark_inputs)?,
                     measurement_policy_sha256: common::normalized_text_hash(policy_path)?,
                     benchmark,
                     filter,
@@ -1053,4 +1077,25 @@ fn execute(spec: CrateRunSpec<'_>) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allow_different_locks_requires_explicit_exploratory_only_for_a_mismatch() {
+        let mut matching = EvidenceMode::strict();
+        require_different_lockfiles_exploratory(&mut matching, false, true, false).unwrap();
+        assert!(matching.strict_configuration());
+
+        let mut strict = EvidenceMode::strict();
+        assert!(require_different_lockfiles_exploratory(&mut strict, false, true, true).is_err());
+
+        let mut exploratory = EvidenceMode::exploratory("explicit --exploratory request");
+        require_different_lockfiles_exploratory(&mut exploratory, true, true, true).unwrap();
+        assert!(exploratory.reasons.iter().any(|reason| {
+            reason == "baseline and candidate resolved different dependency lockfiles"
+        }));
+    }
 }

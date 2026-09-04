@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use super::arguments::{
     CriterionProfile, EvidenceMode, absolute, criterion_evidence_mode, criterion_settings,
-    required_string,
+    require_exploratory, required_string,
 };
 use super::common;
 use super::criterion::{self, CriterionInvocation, CriterionMode, CriterionRun, CriterionSettings};
@@ -163,6 +163,28 @@ struct RefRunSpec<'a> {
     max_outlier_fraction: f64,
 }
 
+fn require_ref_policy_settings(
+    evidence_mode: &mut EvidenceMode,
+    explicitly_exploratory: bool,
+    blocks: usize,
+    policy_blocks: usize,
+    cooldown: f64,
+    policy_cooldown: f64,
+) -> Result<()> {
+    require_exploratory(
+        evidence_mode,
+        explicitly_exploratory,
+        blocks != policy_blocks,
+        "block count differs from the measurement policy",
+    )?;
+    require_exploratory(
+        evidence_mode,
+        explicitly_exploratory,
+        cooldown != policy_cooldown,
+        "cooldown differs from the measurement policy",
+    )
+}
+
 pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     let baseline_ref = required_string(arguments, "baseline")?;
     let candidate_ref = required_string(arguments, "candidate")?;
@@ -208,18 +230,21 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     if !cooldown.is_finite() || !(0.0..=policy::MAX_DURATION_SECONDS).contains(&cooldown) {
         return Err(invalid_data("cooldown is outside the supported range"));
     }
+    let explicitly_exploratory = arguments.get_flag("exploratory");
     let mut evidence_mode = criterion_evidence_mode(
-        arguments.get_flag("exploratory"),
+        explicitly_exploratory,
         settings,
         &policy,
         CriterionProfile::RefToRef,
     )?;
-    if blocks != usize::try_from(policy.ref_to_ref.blocks)? {
-        evidence_mode.weaken("block count differs from the measurement policy");
-    }
-    if cooldown != policy.ref_to_ref.cooldown_seconds {
-        evidence_mode.weaken("cooldown differs from the measurement policy");
-    }
+    require_ref_policy_settings(
+        &mut evidence_mode,
+        explicitly_exploratory,
+        blocks,
+        usize::try_from(policy.ref_to_ref.blocks)?,
+        cooldown,
+        policy.ref_to_ref.cooldown_seconds,
+    )?;
     common::require_strict_windows_local_volume(
         root,
         "strict ref benchmark repository root",
@@ -319,12 +344,7 @@ fn evaluate_measurements(
     position_replicates: usize,
 ) -> Result<RefEvaluation> {
     let paired = if execution_valid {
-        pair_measurements(
-            measurements,
-            blocks,
-            position_replicates,
-            max_pair_spread,
-        )?
+        pair_measurements(measurements, blocks, position_replicates, max_pair_spread)?
     } else {
         PairedMeasurements {
             pairs: Vec::new(),
@@ -421,13 +441,15 @@ fn execute(spec: RefRunSpec<'_>) -> Result<()> {
     }
     let baseline_digest = common::tree_digest(&baseline_source)?;
     let candidate_digest = common::tree_digest(&candidate_source)?;
+    let baseline_package = common::subject_package_name(&baseline_source)?;
+    let candidate_package = common::subject_package_name(&candidate_source)?;
 
     let harness_root = temporary.path().join("harnesses");
     let baseline_manifest = common::prepare_harness(
         &harness_root,
         "baseline",
         &baseline_source,
-        "fs2",
+        &baseline_package,
         benchmark_inputs,
         lockfile,
     )?;
@@ -435,7 +457,7 @@ fn execute(spec: RefRunSpec<'_>) -> Result<()> {
         &harness_root,
         "candidate",
         &candidate_source,
-        "fs2",
+        &candidate_package,
         benchmark_inputs,
         lockfile,
     )?;
@@ -557,7 +579,7 @@ fn execute(spec: RefRunSpec<'_>) -> Result<()> {
                     candidate_commit: &candidate_commit,
                     baseline_tree_sha256: baseline_digest.clone(),
                     candidate_tree_sha256: candidate_digest.clone(),
-                    benchmark_harness_sha256: common::tree_digest(benchmark_inputs)?,
+                    benchmark_harness_sha256: common::publication_tree_digest(benchmark_inputs)?,
                     measurement_policy_sha256: common::normalized_text_hash(policy_path)?,
                     benches,
                     filter,
@@ -737,7 +759,7 @@ fn execute(spec: RefRunSpec<'_>) -> Result<()> {
         candidate_commit: &candidate_commit,
         baseline_tree_sha256: baseline_digest,
         candidate_tree_sha256: candidate_digest,
-        benchmark_harness_sha256: common::tree_digest(benchmark_inputs)?,
+        benchmark_harness_sha256: common::publication_tree_digest(benchmark_inputs)?,
         measurement_policy_sha256: common::normalized_text_hash(policy_path)?,
         baseline_lock: retained_baseline_lock.clone(),
         baseline_lock_sha256: common::hash_file(&retained_baseline_lock)?,
@@ -799,9 +821,7 @@ fn pair_measurements(
     max_pair_spread: f64,
 ) -> Result<PairedMeasurements> {
     if position_replicates == 0 || position_replicates.is_multiple_of(2) {
-        return Err(invalid_data(
-            "position replicates must be positive and odd",
-        ));
+        return Err(invalid_data("position replicates must be positive and odd"));
     }
     let keys = measurements
         .iter()
@@ -965,5 +985,35 @@ mod tests {
         let ratios = &paired.ratios["bench::metric"];
         assert!((ratios[0] - (1.1_f64 * 1.2).sqrt()).abs() < f64::EPSILON);
         assert!((ratios[1] - (0.9_f64 * 0.95).sqrt()).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn non_policy_blocks_require_explicit_exploratory() {
+        let mut strict = EvidenceMode::strict();
+        assert!(require_ref_policy_settings(&mut strict, false, 7, 8, 10.0, 10.0).is_err());
+
+        let mut exploratory = EvidenceMode::exploratory("explicit --exploratory request");
+        require_ref_policy_settings(&mut exploratory, true, 7, 8, 10.0, 10.0).unwrap();
+        assert!(
+            exploratory
+                .reasons
+                .iter()
+                .any(|reason| reason == "block count differs from the measurement policy")
+        );
+    }
+
+    #[test]
+    fn non_policy_cooldown_requires_explicit_exploratory() {
+        let mut strict = EvidenceMode::strict();
+        assert!(require_ref_policy_settings(&mut strict, false, 8, 8, 9.0, 10.0).is_err());
+
+        let mut exploratory = EvidenceMode::exploratory("explicit --exploratory request");
+        require_ref_policy_settings(&mut exploratory, true, 8, 8, 9.0, 10.0).unwrap();
+        assert!(
+            exploratory
+                .reasons
+                .iter()
+                .any(|reason| reason == "cooldown differs from the measurement policy")
+        );
     }
 }

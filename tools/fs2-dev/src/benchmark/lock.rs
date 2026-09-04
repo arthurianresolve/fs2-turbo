@@ -1,5 +1,5 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::ArgMatches;
@@ -15,6 +15,8 @@ use crate::report;
 use crate::{Result, invalid_data};
 
 const METRIC: &str = "lock_unlock";
+const UPSTREAM_V0_4_3: &str = "9a340454a8292df025de368fc4b310bb736f382f";
+const UPSTREAM_REPORT: &str = "upstream-v0.4.3/report.json";
 
 #[derive(Serialize)]
 struct Method {
@@ -63,6 +65,8 @@ struct LockReport<'a> {
     environment: EnvironmentSnapshot,
     completed_environment: EnvironmentSnapshot,
     method: Method,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upstream_v0_4_3_report: Option<&'static str>,
     artifacts: Artifacts,
     build: &'a ProcessRecord,
     source_setup: &'a [ProcessRecord],
@@ -130,6 +134,7 @@ fn paired_tools_feature_args() -> [String; 2] {
 
 pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     let output = absolute(root, required_path(arguments, "output")?);
+    let compare_upstream = arguments.get_flag("compare-upstream-v0-4-3");
     let source_policy = root.join("benchmarks/measurement-policy.json");
     let (policy, policy_bytes) = policy::load_with_source(&source_policy)?;
     let settings = paired::settings(arguments, &policy)?;
@@ -201,7 +206,45 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     match (result, publication) {
         (_, Err(error)) => Err(error),
         (result, Ok(())) => result,
+    }?;
+    if compare_upstream {
+        run_upstream_comparison(root, arguments, &output)?;
     }
+    Ok(())
+}
+
+fn run_upstream_comparison(root: &Path, arguments: &ArgMatches, output: &Path) -> Result<()> {
+    let matches = upstream_ref_arguments(
+        &output.join("upstream-v0.4.3"),
+        arguments.get_flag("exploratory"),
+    )?;
+    super::stats::run_lock_refs(root, &matches)
+}
+
+fn upstream_ref_arguments(output: &Path, exploratory: bool) -> Result<ArgMatches> {
+    let mut arguments = vec![
+        OsString::from("bench"),
+        OsString::from("lock-refs"),
+        OsString::from("--baseline"),
+        OsString::from(UPSTREAM_V0_4_3),
+        OsString::from("--candidate"),
+        OsString::from("HEAD"),
+        OsString::from("--output"),
+        output.as_os_str().to_owned(),
+        OsString::from("--trust-selected-code"),
+    ];
+    if exploratory {
+        arguments.push(OsString::from("--exploratory"));
+    }
+    let matches = super::command()
+        .try_get_matches_from(arguments)
+        .map_err(|error| invalid_data(format!("construct upstream v0.4.3 benchmark: {error}")))?;
+    matches
+        .subcommand_matches("lock-refs")
+        .cloned()
+        .ok_or_else(|| {
+            invalid_data("upstream v0.4.3 benchmark arguments selected no lock-refs mode")
+        })
 }
 
 fn execute(spec: RunSpec<'_>) -> Result<()> {
@@ -374,6 +417,7 @@ fn execute(spec: RunSpec<'_>) -> Result<()> {
         max_outlier_fraction,
         minimum_free_bytes,
         rotation_count: None,
+        diagnostic_samples: false,
     })?;
     let paired::MeasurementRuns {
         records,
@@ -436,6 +480,9 @@ fn execute(spec: RunSpec<'_>) -> Result<()> {
                     prime_timings_used: false,
                     inference: "exact distribution-free one-sided A/B and simultaneous two-sided A/A median bounds",
                 },
+                upstream_v0_4_3_report: arguments
+                    .get_flag("compare-upstream-v0-4-3")
+                    .then_some(UPSTREAM_REPORT),
                 artifacts: Artifacts {
                     frozen_source_sha256: frozen_source_digest,
                     harness_source: retained_harness.clone(),
@@ -481,15 +528,17 @@ fn execute(spec: RunSpec<'_>) -> Result<()> {
 }
 
 fn worktree_status(root: &Path) -> Result<String> {
-    let mut command = Command::new("git");
-    command.current_dir(root).args([
-        "status",
-        "--porcelain=v1",
-        "-z",
-        "--untracked-files=all",
-        "--ignored=matching",
-    ]);
-    let output = process::capture(&mut command, "capture benchmark source status")?;
+    let output = common::git_output(
+        root,
+        [
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignored=matching",
+        ],
+        "capture benchmark source status",
+    )?;
     let mut status = Vec::new();
     for record in output.stdout.split(|byte| *byte == 0) {
         if common::repository_state_record_is_dirty(record) {
@@ -510,7 +559,19 @@ fn require_live_source_copy_trust(copy_live_source: bool, arguments: &ArgMatches
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::process::Command;
+
     use super::*;
+
+    fn run_git(root: &Path, arguments: &[&str]) {
+        let status = Command::new("git")
+            .current_dir(root)
+            .args(arguments)
+            .status()
+            .expect("git should execute");
+        assert!(status.success(), "git {arguments:?} failed");
+    }
 
     fn lock_arguments(trust_selected_code: bool) -> ArgMatches {
         let mut arguments = vec!["bench", "lock", "--output", "out"];
@@ -541,6 +602,62 @@ mod tests {
         assert_eq!(
             paired_tools_feature_args(),
             ["--features".to_owned(), "paired-tools".to_owned()]
+        );
+    }
+
+    #[test]
+    fn worktree_status_does_not_execute_configured_fsmonitor() {
+        let repo = tempfile::tempdir().unwrap();
+        run_git(repo.path(), &["init", "--quiet"]);
+        fs::write(repo.path().join("tracked"), "tracked\n").unwrap();
+        let hook = repo.path().join("fsmonitor-test-hook");
+        fs::write(&hook, "#!/bin/sh\nprintf invoked > fsmonitor-was-invoked\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        run_git(repo.path(), &["add", "tracked", "fsmonitor-test-hook"]);
+        run_git(
+            repo.path(),
+            &[
+                "-c",
+                "user.name=Codex",
+                "-c",
+                "user.email=codex@example.com",
+                "commit",
+                "--quiet",
+                "-m",
+                "init",
+            ],
+        );
+        run_git(
+            repo.path(),
+            &["config", "core.fsmonitor", "./fsmonitor-test-hook"],
+        );
+        run_git(repo.path(), &["config", "core.untrackedCache", "true"]);
+
+        let status = worktree_status(repo.path());
+
+        assert!(status.is_ok(), "{status:?}");
+        assert!(!repo.path().join("fsmonitor-was-invoked").exists());
+    }
+
+    #[test]
+    fn upstream_comparison_uses_the_exact_v0_4_3_ref_and_lock_workload() {
+        let matches = upstream_ref_arguments(Path::new("out/upstream-v0.4.3"), false).unwrap();
+
+        assert_eq!(
+            matches.get_one::<String>("baseline").map(String::as_str),
+            Some(UPSTREAM_V0_4_3)
+        );
+        assert_eq!(
+            matches.get_one::<String>("candidate").map(String::as_str),
+            Some("HEAD")
+        );
+        assert_eq!(
+            matches.get_one::<PathBuf>("output"),
+            Some(&PathBuf::from("out/upstream-v0.4.3"))
         );
     }
 }

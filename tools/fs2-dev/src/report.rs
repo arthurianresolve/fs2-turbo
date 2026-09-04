@@ -6,11 +6,12 @@ use tempfile::NamedTempFile;
 
 use crate::Result;
 
-pub(crate) const SCHEMA_VERSION: u64 = 10;
+pub(crate) const SCHEMA_VERSION: u64 = 11;
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum ReportKind {
+    Common,
     CrossCrate,
     Lock,
     RefToRef,
@@ -142,11 +143,11 @@ mod tests {
             serde_json::json!({ "run": 1 }),
         ))
         .unwrap();
-        assert_eq!(SCHEMA_VERSION, 10);
+        assert_eq!(SCHEMA_VERSION, 11);
         assert_eq!(
             report,
             serde_json::json!({
-                "schema_version": 10,
+                "schema_version": 11,
                 "report_kind": "lock",
                 "status": "completed",
                 "valid": true,
@@ -167,7 +168,7 @@ mod tests {
             serde_json::json!({ "error": "setup failed" }),
         ))
         .unwrap();
-        assert_eq!(invalid["schema_version"], 10);
+        assert_eq!(invalid["schema_version"], 11);
         assert_eq!(invalid["report_kind"], "stats");
         assert_eq!(invalid["status"], "invalid-execution");
         assert_eq!(invalid["valid"], false);

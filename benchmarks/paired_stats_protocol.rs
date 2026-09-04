@@ -1,3 +1,11 @@
+pub const COMMON_METRICS: [&str; 5] = [
+    "free_space",
+    "available_space",
+    "total_space",
+    "allocation_granularity",
+    "stats_snapshot/one_snapshot",
+];
+
 pub const METRICS: [&str; 7] = [
     "free_space",
     "available_space",

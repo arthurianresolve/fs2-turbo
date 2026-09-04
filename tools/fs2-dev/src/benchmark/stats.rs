@@ -12,6 +12,7 @@ use super::stats_report::{
 use super::stats_source::{
     BASELINE_PACKAGE, CANDIDATE_PACKAGE, ManifestSpec, rename_package, write_manifest,
 };
+use super::{host, noise};
 use crate::policy;
 use crate::process;
 use crate::report;
@@ -21,9 +22,141 @@ use clap::ArgMatches;
 #[path = "../../../../benchmarks/paired_stats_protocol.rs"]
 mod stats_protocol;
 
+#[path = "../../../../benchmarks/paired_common_protocol.rs"]
+mod common_protocol;
+
+#[path = "../../../../benchmarks/paired_duplicate_protocol.rs"]
+mod duplicate_protocol;
+
+#[path = "../../../../benchmarks/paired_single_duplicate_protocol.rs"]
+mod single_duplicate_protocol;
+
+#[path = "../../../../benchmarks/paired_file_create_delete_protocol.rs"]
+mod file_create_delete_protocol;
+
 const METRICS: [&str; 7] = stats_protocol::METRICS;
+const COMMON_METRICS: [&str; 5] = stats_protocol::COMMON_METRICS;
+const LOCK_METRICS: [&str; 1] = ["lock_unlock"];
+
+#[derive(Clone, Copy)]
+struct PairedProfile {
+    id: &'static str,
+    policy_source: &'static str,
+    report_kind: report::ReportKind,
+    harness_source: &'static str,
+    protocol_source: &'static str,
+    package_name: &'static str,
+    metrics: &'static [&'static str],
+    operations_per_timed_interval: u64,
+    diagnostic_samples: bool,
+    prepared_queries: bool,
+    include_tempfile: bool,
+    rotate_workloads: bool,
+    output_prefix: &'static str,
+    method_name: &'static str,
+    method_reason: &'static str,
+}
+
+const FULL_STATS: PairedProfile = PairedProfile {
+    id: "filesystem-stats-full",
+    diagnostic_samples: false,
+    policy_source: "benchmarks/measurement-policy.json",
+    report_kind: report::ReportKind::Stats,
+    harness_source: "benchmarks/paired_stats.rs",
+    protocol_source: "benchmarks/paired_stats_protocol.rs",
+    package_name: "fs2-paired-stats",
+    metrics: &METRICS,
+    operations_per_timed_interval: 1,
+    prepared_queries: true,
+    include_tempfile: false,
+    rotate_workloads: true,
+    output_prefix: "fs2-stats-output-",
+    method_name: "same-process alternating paired filesystem-stat measurement",
+    method_reason: "separate-process ABBA cannot cancel abrupt between-process Windows filesystem state changes",
+};
+
+const COMMON_V04_STATS: PairedProfile = PairedProfile {
+    id: "filesystem-stats-v0.4-common",
+    metrics: &COMMON_METRICS,
+    prepared_queries: false,
+    ..FULL_STATS
+};
+
+const EXACT_REF_LOCK: PairedProfile = PairedProfile {
+    id: "lock-exact-refs",
+    diagnostic_samples: false,
+    policy_source: "benchmarks/measurement-policy.json",
+    report_kind: report::ReportKind::Lock,
+    harness_source: "benchmarks/paired_lock_refs.rs",
+    protocol_source: "benchmarks/paired_lock_protocol.rs",
+    package_name: "fs2-paired-lock-refs",
+    metrics: &LOCK_METRICS,
+    operations_per_timed_interval: 1,
+    prepared_queries: false,
+    include_tempfile: true,
+    rotate_workloads: false,
+    output_prefix: "fs2-lock-refs-output-",
+    method_name: "same-process alternating exact-ref lock measurement",
+    method_reason: "compare the v0.4-compatible lock sequence from immutable baseline and candidate revisions in one process",
+};
+
+const COMMON_API: PairedProfile = PairedProfile {
+    id: "common-api-v0.4",
+    diagnostic_samples: false,
+    policy_source: "benchmarks/measurement-policy.json",
+    report_kind: report::ReportKind::Common,
+    harness_source: "benchmarks/paired_common.rs",
+    protocol_source: "benchmarks/paired_common_protocol.rs",
+    package_name: "fs2-paired-common",
+    metrics: common_protocol::METRICS,
+    operations_per_timed_interval: 1,
+    prepared_queries: false,
+    include_tempfile: true,
+    rotate_workloads: true,
+    output_prefix: "fs2-common-output-",
+    method_name: "same-process alternating exact-ref common API measurement",
+    method_reason: "compare the common API under one dependency lockfile with adjacent ABBA/BAAB operations and A/A controls",
+};
+
+const DUPLICATE_BATCHED: PairedProfile = PairedProfile {
+    id: "duplicate-batch64",
+    policy_source: "benchmarks/duplicate-measurement-policy.json",
+    report_kind: report::ReportKind::Common,
+    harness_source: "benchmarks/paired_duplicate.rs",
+    protocol_source: "benchmarks/paired_duplicate_protocol.rs",
+    package_name: "fs2-paired-duplicate",
+    metrics: duplicate_protocol::METRICS,
+    operations_per_timed_interval: duplicate_protocol::OPERATIONS_PER_TIMED_INTERVAL,
+    output_prefix: "fs2-duplicate-output-",
+    method_name: "same-process batched exact-ref duplicate measurement",
+    method_reason: "amortize timer overhead across 64 immediate duplicate-and-drop operations with balanced ordering and A/A controls",
+    ..EXACT_REF_LOCK
+};
+
+const DUPLICATE_SINGLE: PairedProfile = PairedProfile {
+    id: "duplicate-single-call",
+    policy_source: "benchmarks/duplicate-measurement-policy.json",
+    protocol_source: "benchmarks/paired_single_duplicate_protocol.rs",
+    metrics: single_duplicate_protocol::METRICS,
+    output_prefix: "fs2-duplicate-single-output-",
+    method_name: "original common-API single-call duplicate measurement",
+    method_reason: "reuse the original duplicate timed body without batching or unrelated measured workloads",
+    ..COMMON_API
+};
+
+const FILE_CREATE_DELETE: PairedProfile = PairedProfile {
+    id: "file-create-delete-single-workload",
+    protocol_source: "benchmarks/paired_file_create_delete_protocol.rs",
+    metrics: file_create_delete_protocol::METRICS,
+    output_prefix: "fs2-file-create-delete-output-",
+    method_name: "original common-API file-create-delete measurement",
+    method_reason: "reuse the original timed body and common policy without unrelated measured workloads",
+    ..COMMON_API
+};
 
 struct StatsRunSpec<'a> {
+    profile: PairedProfile,
+    idle_policy: Option<host::Policy>,
     root: &'a Path,
     repo: &'a Path,
     fixture: &'a Path,
@@ -40,6 +173,7 @@ struct StatsRunSpec<'a> {
     max_outlier_fraction: f64,
     minimum_free_bytes: u64,
     margin: f64,
+    aa_margin: f64,
     confidence: f64,
     policy_path: &'a Path,
     harness_source: &'a Path,
@@ -49,6 +183,69 @@ struct StatsRunSpec<'a> {
 }
 
 pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    let profile = if arguments.get_flag("common-v0-4") {
+        COMMON_V04_STATS
+    } else {
+        FULL_STATS
+    };
+    run_profile(root, arguments, profile)
+}
+
+pub(crate) fn run_lock_refs(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    run_profile(root, arguments, EXACT_REF_LOCK)
+}
+
+pub(crate) fn run_common_refs(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    run_profile(root, arguments, COMMON_API)
+}
+
+pub(crate) fn run_file_create_delete_refs(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    run_profile(root, arguments, FILE_CREATE_DELETE)
+}
+
+pub(crate) fn run_duplicate_refs(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    run_duplicate_profile(root, arguments, DUPLICATE_BATCHED)
+}
+
+pub(crate) fn run_duplicate_single_refs(root: &Path, arguments: &ArgMatches) -> Result<()> {
+    run_duplicate_profile(root, arguments, DUPLICATE_SINGLE)
+}
+
+fn run_duplicate_profile(
+    root: &Path,
+    arguments: &ArgMatches,
+    profile: PairedProfile,
+) -> Result<()> {
+    let profile = if arguments.get_flag("diagnostic-trace")
+        || arguments.get_flag("diagnostic-samples")
+    {
+        if !arguments.get_flag("exploratory") {
+            return Err(invalid_data(
+                "diagnostic instrumentation requires --exploratory",
+            ));
+        }
+        PairedProfile {
+            method_name: "diagnostic duplicate sample-window capture",
+            method_reason: if arguments.get_flag("diagnostic-trace") {
+                "operator-declared external tracing with sample-window capture; diagnostic only"
+            } else {
+                "sample-window capture without a claim that external tracing was active; diagnostic only"
+            },
+            diagnostic_samples: true,
+            ..profile
+        }
+    } else {
+        profile
+    };
+    run_profile(root, arguments, profile)
+}
+
+fn run_profile(root: &Path, arguments: &ArgMatches, profile: PairedProfile) -> Result<()> {
+    if profile.diagnostic_samples && !arguments.get_flag("exploratory") {
+        return Err(invalid_data(
+            "diagnostic samples cannot be strict performance evidence",
+        ));
+    }
     let repo = arguments
         .get_one::<PathBuf>("repo")
         .cloned()
@@ -63,10 +260,16 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
         .unwrap_or_else(|| root.to_owned());
     let explicit_output_root = arguments.contains_id("output-root");
     let output = required_path(arguments, "output")?;
-    let source_policy = root.join("benchmarks/measurement-policy.json");
+    let source_policy = root.join(profile.policy_source);
     let (policy, policy_bytes) = policy::load_with_source(&source_policy)?;
     let settings = paired::settings(arguments, &policy)?;
     let strict = settings.evidence_mode.strict_configuration();
+    let idle_policy = host::Policy::from_arguments(arguments)?;
+    if cfg!(windows) && strict && profile.id.starts_with("duplicate") && idle_policy.is_none() {
+        return Err(invalid_data(
+            "strict Windows duplicate comparisons require explicit --idle-max-core-busy-percent and --idle-max-sample-busy-percent limits",
+        ));
+    }
     let repo = absolute(root, repo);
     let fixture = absolute(root, fixture);
     let output_root = absolute(root, output_root);
@@ -109,15 +312,15 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     )?;
     let output = _destination_guard.path().to_owned();
     let staged =
-        super::output::StagedDirectory::new(&output_root, &output, "fs2-stats-output-", strict)?;
+        super::output::StagedDirectory::new(&output_root, &output, profile.output_prefix, strict)?;
     let staged_output = staged.path().to_owned();
     let policy_path = common::retain_bytes(
         &policy_bytes,
         &staged_output.join("artifacts/measurement-policy.json"),
     )?;
     let harness_source = common::retain_artifact(
-        &root.join("benchmarks/paired_stats.rs"),
-        &staged_output.join("artifacts/paired_stats.rs"),
+        &root.join(profile.harness_source),
+        &staged_output.join("artifacts/paired_harness.rs"),
     )?;
     let paired_core_source = common::retain_artifact(
         &root.join("benchmarks/paired.rs"),
@@ -128,10 +331,12 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
         &staged_output.join("artifacts/paired_protocol.rs"),
     )?;
     let paired_stats_protocol_source = common::retain_artifact(
-        &root.join("benchmarks/paired_stats_protocol.rs"),
-        &staged_output.join("artifacts/paired_stats_protocol.rs"),
+        &root.join(profile.protocol_source),
+        &staged_output.join("artifacts/workload_protocol.rs"),
     )?;
     let result = execute(StatsRunSpec {
+        profile,
+        idle_policy,
         root,
         repo: repo.path(),
         fixture: &fixture,
@@ -148,6 +353,7 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
         max_outlier_fraction: settings.max_outlier_fraction,
         minimum_free_bytes: policy.resources.minimum_free_bytes,
         margin: policy.non_inferiority_margin,
+        aa_margin: policy.aa_equivalence_margin(),
         confidence: policy.paired_process.confidence,
         policy_path: &policy_path,
         harness_source: &harness_source,
@@ -160,10 +366,11 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
     {
         report::write_invalid(
             &staged_output.join("report.json"),
-            report::ReportKind::Stats,
+            profile.report_kind,
             &error.to_string(),
             StatsInvalidContext {
                 decision: "invalid-execution",
+                profile: profile.id,
                 environment: EnvironmentSnapshot::capture(&fixture).ok(),
                 baseline_ref: baseline,
                 candidate_ref: candidate,
@@ -184,6 +391,8 @@ pub(crate) fn run(root: &Path, arguments: &ArgMatches) -> Result<()> {
 
 fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
     let StatsRunSpec {
+        profile,
+        idle_policy,
         root,
         repo,
         fixture,
@@ -200,6 +409,7 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         max_outlier_fraction,
         minimum_free_bytes,
         margin,
+        aa_margin,
         confidence,
         policy_path,
         harness_source,
@@ -244,7 +454,7 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
     if !common::processes_succeeded(&source_setup) {
         report::write_setup_failure(
             &output.join("report.json"),
-            report::ReportKind::Stats,
+            profile.report_kind,
             "unable to materialize isolated benchmark sources",
             &source_setup,
         )?;
@@ -258,6 +468,8 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
     rename_package(&candidate_source, CANDIDATE_PACKAGE)?;
     let project = artifact_root.join("build");
     write_manifest(ManifestSpec {
+        package_name: profile.package_name,
+        include_tempfile: profile.include_tempfile,
         project: &project,
         harness_source,
         paired_core_source,
@@ -316,6 +528,9 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         .arg(&manifest)
         .args(["--target-dir"])
         .arg(&target);
+    if !profile.prepared_queries {
+        build.arg("--no-default-features");
+    }
     let build_record = if lock_record.succeeded() {
         process::run_logged_attempt(
             &mut build,
@@ -333,7 +548,7 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         )
     };
     let binary_result = if build_record.succeeded() {
-        common::cargo_executable(&build_record.stdout, "fs2-paired-stats")
+        common::cargo_executable(&build_record.stdout, profile.package_name)
     } else {
         Err(invalid_data(build_record.failure_description()))
     };
@@ -345,11 +560,12 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         report::write_json(
             &output.join("report.json"),
             &report::ReportEnvelope::new(
-                report::ReportKind::Stats,
+                profile.report_kind,
                 "setup-failure",
                 false,
                 SetupFailureReport {
                     decision: "setup-failure",
+                    profile: profile.id,
                     environment,
                     baseline_source: &baseline_revision,
                     candidate_source: &candidate_revision,
@@ -396,6 +612,15 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
 
     let warm_up_ms = paired::duration_millis(warm_up)?;
     let measurement_ms = paired::duration_millis(measurement)?;
+    let admission_path = artifact_root.join("host-admission.json");
+    let mut admission = idle_policy
+        .map(|policy| host::admit(policy, &admission_path))
+        .transpose()?;
+    let environment = if admission.is_some() {
+        EnvironmentSnapshot::capture(fixture)?
+    } else {
+        environment
+    };
     let measurement_runs = paired::run_binary_jobs(paired::BinaryJobSpec {
         working_directory: if evidence_mode.strict_configuration() {
             project.as_path()
@@ -405,7 +630,7 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         fixture_argument: fixture,
         binary: &retained_binary,
         logs: &logs,
-        metrics: &METRICS,
+        metrics: profile.metrics,
         replicates,
         sample_size,
         warm_up_ms,
@@ -414,7 +639,10 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
         aa_control,
         max_outlier_fraction,
         minimum_free_bytes,
-        rotation_count: Some(METRICS.len() - 1),
+        rotation_count: profile
+            .rotate_workloads
+            .then_some(profile.metrics.len() - usize::from(profile.prepared_queries)),
+        diagnostic_samples: profile.diagnostic_samples,
     })?;
     let paired::MeasurementRuns {
         records,
@@ -430,14 +658,42 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
     }
     let completed_environment = EnvironmentSnapshot::capture(fixture)?;
     anomalies.extend(environment.drift_reasons(&completed_environment));
+    if let Some(guard) = &mut admission {
+        guard.restore()?;
+    }
+    let noise_path = artifact_root.join("noise.json");
+    let noise_inputs = runs
+        .iter()
+        .map(|run| {
+            let mut input = noise::input(&logs.join(format!("{}.stdout.tsv", run.run)));
+            input["run"] = serde_json::json!(run.run);
+            input["mode"] = serde_json::json!(run.mode);
+            input
+        })
+        .collect();
+    report::write_json(&noise_path, &noise::envelope(noise_inputs))?;
 
     let (ab_summary, ab_passed) = if anomalies.is_empty() {
-        paired::summarize(&records, "ab", &METRICS, replicates, confidence, margin)?
+        paired::summarize(
+            &records,
+            "ab",
+            profile.metrics,
+            replicates,
+            confidence,
+            margin,
+        )?
     } else {
         (Vec::new(), false)
     };
     let (aa_summary, aa_passed) = if anomalies.is_empty() && aa_control {
-        paired::summarize(&records, "aa", &METRICS, replicates, confidence, margin)?
+        paired::summarize(
+            &records,
+            "aa",
+            profile.metrics,
+            replicates,
+            confidence,
+            aa_margin,
+        )?
     } else {
         (Vec::new(), !aa_control)
     };
@@ -451,7 +707,7 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
     report::write_json(
         &output.join("report.json"),
         &report::ReportEnvelope::new(
-            report::ReportKind::Stats,
+            profile.report_kind,
             if gate.valid { "completed" } else { "invalid" },
             gate.valid,
             StatsReport {
@@ -464,9 +720,17 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
                 completed_environment,
                 fixture,
                 method: StatsMethod {
-                    name: "same-process alternating paired filesystem-stat measurement",
-                    reason: "separate-process ABBA cannot cancel abrupt between-process Windows filesystem state changes",
+                    profile: profile.id,
+                    name: profile.method_name,
+                    reason: profile.method_reason,
+                    operations_per_timed_interval: profile.operations_per_timed_interval,
+                    diagnostic_samples: profile.diagnostic_samples,
+                    host_admission_sha256: idle_policy
+                        .map(|_| common::hash_file(&admission_path))
+                        .transpose()?,
+                    noise_report_sha256: common::hash_file(&noise_path)?,
                     non_regression_margin: margin,
+                    aa_equivalence_margin: aa_margin,
                     confidence,
                     process_replicates: replicates,
                     sample_size,
@@ -495,9 +759,11 @@ fn execute(spec: StatsRunSpec<'_>) -> Result<()> {
                     manifest: retained_manifest.clone(),
                     manifest_sha256: common::hash_file(&retained_manifest)?,
                     baseline_repository: baseline_source.clone(),
-                    baseline_repository_sha256: baseline_source_digest,
+                    baseline_repository_sha256: common::publication_tree_digest(&baseline_source)?,
                     candidate_repository: candidate_source.clone(),
-                    candidate_repository_sha256: candidate_source_digest,
+                    candidate_repository_sha256: common::publication_tree_digest(
+                        &candidate_source,
+                    )?,
                     cargo_lock: retained_lock.clone(),
                     cargo_lock_sha256: common::hash_file(&retained_lock)?,
                     binary: retained_binary.clone(),

@@ -8,6 +8,8 @@ pub(super) const BASELINE_PACKAGE: &str = "fs2-benchmark-baseline";
 pub(super) const CANDIDATE_PACKAGE: &str = "fs2-benchmark-candidate";
 
 pub(super) struct ManifestSpec<'a> {
+    pub(super) package_name: &'a str,
+    pub(super) include_tempfile: bool,
     pub(super) project: &'a Path,
     pub(super) harness_source: &'a Path,
     pub(super) paired_core_source: &'a Path,
@@ -19,6 +21,8 @@ pub(super) struct ManifestSpec<'a> {
 
 pub(super) fn write_manifest(spec: ManifestSpec<'_>) -> Result<()> {
     let ManifestSpec {
+        package_name,
+        include_tempfile,
         project,
         harness_source,
         paired_core_source,
@@ -40,10 +44,15 @@ pub(super) fn write_manifest(spec: ManifestSpec<'_>) -> Result<()> {
     )?;
     let baseline = manifest_path(baseline_source)?;
     let candidate = manifest_path(candidate_source)?;
+    let tempfile = if include_tempfile {
+        "tempfile = \"3.27\"\n"
+    } else {
+        ""
+    };
     fs::write(
         project.join("Cargo.toml"),
         format!(
-            "[package]\nname = \"fs2-paired-stats\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[dependencies]\nfs2_baseline = {{ package = {BASELINE_PACKAGE:?}, path = {baseline:?} }}\nfs2_candidate = {{ package = {CANDIDATE_PACKAGE:?}, path = {candidate:?} }}\n\n[workspace]\n"
+            "[package]\nname = {package_name:?}\nversion = \"0.0.0\"\nedition = \"2021\"\n\n[features]\ndefault = [\"prepared-query\"]\nprepared-query = []\n\n[dependencies]\nfs2_baseline = {{ package = {BASELINE_PACKAGE:?}, path = {baseline:?} }}\nfs2_candidate = {{ package = {CANDIDATE_PACKAGE:?}, path = {candidate:?} }}\n{tempfile}\n[workspace]\n"
         ),
     )?;
     Ok(())

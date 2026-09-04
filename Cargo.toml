@@ -22,7 +22,7 @@ exclude = [
 ]
 
 [workspace]
-members = ["tools/fs2-dev"]
+members = ["benchmarks", "tools/fs2-dev"]
 exclude = ["compatibility", "benchmarks/vendor/page_size"]
 resolver = "3"
 
@@ -51,4 +51,7 @@ windows-sys = { version = "0.61.2", features = [
 
 [dev-dependencies]
 tempfile = "3.27"
+
+[patch.crates-io]
+page_size = { path = "benchmarks/vendor/page_size" }
 

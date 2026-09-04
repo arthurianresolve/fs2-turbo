@@ -1,0 +1,29 @@
+pub const METRICS: &[&str] = &[
+    "allocated_size",
+    "duplicate",
+    "file_allocate_already_satisfied",
+    "file_create_delete",
+    "file_open_allocate_delete",
+    "file_open_truncate_delete",
+    "lock_unlock",
+    "free_space",
+    "available_space",
+    "total_space",
+    "allocation_granularity",
+    "stats_snapshot/one_snapshot",
+    "stats_snapshot/four_convenience_queries",
+    #[cfg(windows)]
+    "free_space_file_fallback",
+    #[cfg(windows)]
+    "available_space_file_fallback",
+    #[cfg(windows)]
+    "windows_root_stats/free_space",
+    #[cfg(windows)]
+    "windows_root_stats/available_space",
+    #[cfg(windows)]
+    "windows_root_stats/total_space",
+    #[cfg(windows)]
+    "windows_root_stats/allocation_granularity",
+    #[cfg(windows)]
+    "windows_root_stats/one_top_level_snapshot",
+];

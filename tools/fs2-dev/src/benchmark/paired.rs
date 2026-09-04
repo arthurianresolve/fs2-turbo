@@ -125,6 +125,7 @@ pub(super) struct BinaryJobSpec<'a> {
     pub(super) max_outlier_fraction: f64,
     pub(super) minimum_free_bytes: u64,
     pub(super) rotation_count: Option<usize>,
+    pub(super) diagnostic_samples: bool,
 }
 
 pub(super) struct GateDecision {
@@ -584,6 +585,10 @@ where
 fn binary_command(spec: &BinaryJobSpec<'_>, mode: &str, rotation: Option<usize>) -> Command {
     let mut command = Command::new(spec.binary);
     command
+        .env(
+            "FS2_PAIRED_DIAGNOSTIC_SAMPLES",
+            if spec.diagnostic_samples { "1" } else { "0" },
+        )
         .current_dir(spec.working_directory)
         .arg(spec.fixture_argument)
         .arg(mode)
@@ -727,7 +732,7 @@ pub(super) fn open_regular_input(path: &Path) -> Result<fs::File> {
     Ok(file)
 }
 
-fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<String> {
+pub(super) fn read_bounded_utf8(path: &Path, max_bytes: u64) -> Result<String> {
     let file = open_regular_input(path)?;
     let mut bytes = Vec::new();
     file.take(max_bytes.saturating_add(1))
@@ -747,7 +752,7 @@ mod tests {
     #[test]
     fn every_paired_child_receives_the_explicit_fixture() {
         let fixture = Path::new("admitted fixture with spaces");
-        let spec = BinaryJobSpec {
+        let mut spec = BinaryJobSpec {
             working_directory: Path::new("source"),
             fixture_argument: fixture,
             binary: Path::new("paired-harness"),
@@ -762,6 +767,7 @@ mod tests {
             max_outlier_fraction: 0.2,
             minimum_free_bytes: 0,
             rotation_count: None,
+            diagnostic_samples: false,
         };
         for mode in ["ab", "aa"] {
             for rotation in [None, Some(3)] {
@@ -778,6 +784,13 @@ mod tests {
                     assert_eq!(arguments.len(), 5);
                 }
             }
+        }
+        for (enabled, value) in [(false, "0"), (true, "1")] {
+            spec.diagnostic_samples = enabled;
+            let command = binary_command(&spec, "ab", None);
+            assert!(command.get_envs().any(|(key, actual)| {
+                key == "FS2_PAIRED_DIAGNOSTIC_SAMPLES" && actual == Some(value.as_ref())
+            }));
         }
     }
 
@@ -936,5 +949,42 @@ mod tests {
             summary[0].simultaneous_confidence_at_least,
             Some(summary[0].confidence_achieved)
         );
+    }
+
+    #[test]
+    fn tighter_aa_margin_rejects_bias_without_tightening_the_ab_gate() {
+        for (ratio, aa_expected) in [(0.985, false), (0.995, true), (1.005, true), (1.015, false)] {
+            for mode in ["ab", "aa"] {
+                let ratios = vec![ratio; 50];
+                let encoded = ratios
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let text = format!(
+                    "{PROTOCOL}\n{HEADER}\nmetric\t1000\t{}\t{ratio}\t{ratio}\t0\t50\t32\t0\t0\t0\t1\t1\t0\t{encoded}\n",
+                    ratio * 1000.0,
+                );
+                let records = (0..16)
+                    .flat_map(|replicate| {
+                        parse_measurements(
+                            &text,
+                            &format!("{mode}-{replicate}"),
+                            mode,
+                            &["metric"],
+                            50,
+                            0.30,
+                        )
+                        .unwrap()
+                    })
+                    .collect::<Vec<_>>();
+                let margin = if mode == "aa" { 0.01 } else { 0.02 };
+                let (summary, passed) =
+                    summarize(&records, mode, &["metric"], 16, 0.95, margin).unwrap();
+                assert_eq!(passed, mode == "ab" || aa_expected);
+                assert_eq!(summary[0].ratios.len(), 16);
+                assert!(summary[0].confidence_achieved >= 0.95);
+            }
+        }
     }
 }
