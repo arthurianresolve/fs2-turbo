@@ -1,4 +1,37 @@
-//! Extended utilities for working with files and filesystems in Rust.
+//! Cross-platform file locking, allocation, duplication, and filesystem statistics.
+//!
+//! The package is published as `fs2-turbo` and exports the `fs2` library crate.
+//! Alias the package in `Cargo.toml` to preserve the established crate name:
+//!
+//! ```toml
+//! [dependencies]
+//! fs2 = { package = "fs2-turbo", version = "1" }
+//! ```
+//!
+//! # Locking
+//!
+//! Rust 1.89 and newer provide inherent locking methods on [`std::fs::File`].
+//! Inherent methods take precedence over extension-trait methods. Use the
+//! collision-safe [`FileExt::fs2_lock_shared`],
+//! [`FileExt::fs2_lock_exclusive`], [`FileExt::fs2_try_lock_shared`],
+//! [`FileExt::fs2_try_lock_exclusive`], and [`FileExt::fs2_unlock`] methods
+//! when the `fs2` implementation must be selected explicitly.
+//!
+//! ```
+//! use fs2::FileExt;
+//! use std::fs::File;
+//! use std::io;
+//!
+//! fn with_exclusive_lock(file: &File) -> io::Result<()> {
+//!     FileExt::fs2_lock_exclusive(file)?;
+//!     FileExt::fs2_unlock(file)
+//! }
+//! ```
+//!
+//! # Filesystem statistics
+//!
+//! Use [`statvfs`] for one consistent snapshot. For repeated fresh snapshots
+//! of the same filesystem, prepare an [`FsStatsQuery`] once and reuse it.
 
 mod allocation;
 mod stats;
@@ -25,7 +58,7 @@ pub(crate) use allocation::AllocationState;
 
 /// Extension trait for `std::fs::File` which provides allocation, duplication and locking methods.
 ///
-/// On Rust 1.97 and later, `std::fs::File` also has inherent locking methods
+/// On Rust 1.89 and later, `std::fs::File` also has inherent locking methods
 /// whose names overlap this trait. Inherent methods take precedence over
 /// extension traits, so use the explicit `fs2_*` methods when calling the
 /// `fs2` implementation: `file.fs2_lock_shared()`,
@@ -136,21 +169,21 @@ pub trait FileExt {
     }
 
     /// Legacy shared-lock method. Prefer [`FileExt::fs2_lock_shared`] on Rust
-    /// 1.97 and later.
+    /// 1.89 and later.
     fn lock_shared(&self) -> Result<()>;
 
     /// Legacy exclusive-lock method. Prefer [`FileExt::fs2_lock_exclusive`].
     fn lock_exclusive(&self) -> Result<()>;
 
     /// Legacy non-blocking shared-lock method. Prefer
-    /// [`FileExt::fs2_try_lock_shared`] on Rust 1.97 and later.
+    /// [`FileExt::fs2_try_lock_shared`] on Rust 1.89 and later.
     fn try_lock_shared(&self) -> Result<()>;
 
     /// Legacy non-blocking exclusive-lock method. Prefer
     /// [`FileExt::fs2_try_lock_exclusive`].
     fn try_lock_exclusive(&self) -> Result<()>;
 
-    /// Legacy unlock method. Prefer [`FileExt::fs2_unlock`] on Rust 1.97 and
+    /// Legacy unlock method. Prefer [`FileExt::fs2_unlock`] on Rust 1.89 and
     /// later.
     fn unlock(&self) -> Result<()>;
 }
