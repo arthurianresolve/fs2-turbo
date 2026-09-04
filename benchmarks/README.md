@@ -34,7 +34,7 @@ only those independent block ratios enter the exact-median acceptance gate.
 Example from the repository root:
 
 ```text
-cargo xtask bench refs --baseline 137e27c --candidate <candidate-commit>
+cargo xtask bench refs --baseline 137e27c --candidate <candidate-commit> --trust-selected-code
 ```
 
 Defaults are three process replicates per logical position, 50 samples, a
@@ -95,7 +95,7 @@ Use the Rust-native paired lock harness when separate benchmark processes show
 directional drift or elevated outlier rates:
 
 ```text
-cargo xtask bench lock --output target/paired-lock-evidence
+cargo xtask bench lock --trust-selected-code --output target/paired-lock-evidence
 ```
 
 The harness compares `fs2_lock_exclusive`/`fs2_unlock` with the v0.4-compatible

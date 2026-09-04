@@ -28,7 +28,7 @@ Run from the repository root with an unused output path:
 > that boundary on the command line.
 
 ```text
-cargo xtask bench stats --baseline <baseline-ref> --candidate <candidate-ref> --trust-selected-code --output C:\bench-results\fs2-paired-stats
+cargo xtask bench stats --baseline <baseline-ref> --candidate <candidate-ref> --trust-selected-code --output-root C:\bench-results --output C:\bench-results\fs2-paired-stats
 ```
 
 The controlled defaults are in the `paired_process` section of
