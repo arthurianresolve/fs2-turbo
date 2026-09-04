@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -108,10 +109,7 @@ pub(crate) fn run(root: &Path, github_output: Option<&Path>) -> Result<()> {
     let rust_version = package_rust_version(root)?;
     let registry = load_registry(&root.join("support-matrix.json"))?;
     validate_registry(&registry, &rust_version)?;
-    let workflow = load_workflow(&root.join(".github/workflows/ci.yml"))?;
-    validate_workflow(&registry, &workflow)?;
-    let release_gates = load_workflow(&root.join(".github/workflows/release-gates.yml"))?;
-    validate_release_workflow(&release_gates)?;
+    validate_workflow_directory(root, &registry)?;
     let generated = matrices(&registry);
     if let Some(path) = github_output {
         write_github_output(path, &generated, &rust_version)?;
@@ -119,6 +117,74 @@ pub(crate) fn run(root: &Path, github_output: Option<&Path>) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&generated)?);
     }
     Ok(())
+}
+
+fn validate_workflow_directory(root: &Path, registry: &SupportRegistry) -> Result<()> {
+    let directory = root.join(".github/workflows");
+    let mut entries = fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    let mut found_ci = false;
+    let mut found_release_gates = false;
+
+    for entry in entries {
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink()
+            || workflow_entry_is_windows_reparse_point(&path)?
+            || !file_type.is_file()
+        {
+            return Err(invalid_data(format!(
+                "workflow directory contains a link or non-file entry: {}",
+                path.display()
+            )));
+        }
+        if !matches!(
+            path.extension(),
+            Some(extension) if extension == OsStr::new("yml") || extension == OsStr::new("yaml")
+        ) {
+            return Err(invalid_data(format!(
+                "workflow directory contains an unexpected file: {}",
+                path.display()
+            )));
+        }
+        let name = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| invalid_data("workflow file name is not valid Unicode"))?;
+        let workflow = load_workflow(&path)?;
+        match name {
+            "ci.yml" => {
+                validate_workflow(registry, &workflow)?;
+                found_ci = true;
+            }
+            "release-gates.yml" => {
+                validate_release_workflow(&workflow)?;
+                found_release_gates = true;
+            }
+            "benchmark-results.yml" => validate_benchmark_publication_workflow(&workflow)?,
+            _ => validate_workflow_policy(&workflow)?,
+        }
+    }
+
+    if !found_ci || !found_release_gates {
+        return Err(invalid_data(
+            "workflow directory must contain ci.yml and release-gates.yml",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn workflow_entry_is_windows_reparse_point(path: &Path) -> Result<bool> {
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    Ok(fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+}
+
+#[cfg(not(windows))]
+fn workflow_entry_is_windows_reparse_point(_path: &Path) -> Result<bool> {
+    Ok(false)
 }
 
 fn load_registry(path: &Path) -> Result<SupportRegistry> {
@@ -366,6 +432,116 @@ fn validate_workflow(registry: &SupportRegistry, workflow: &Value) -> Result<()>
 }
 
 fn validate_workflow_policy(workflow: &Value) -> Result<()> {
+    validate_workflow_policy_with_pages(workflow, false)
+}
+
+fn validate_benchmark_publication_workflow(workflow: &Value) -> Result<()> {
+    let jobs = workflow["jobs"]
+        .as_object()
+        .ok_or_else(|| invalid_data("benchmark publisher must define jobs"))?;
+    if jobs.len() != 2 || !jobs.contains_key("render") || !jobs.contains_key("deploy") {
+        return Err(invalid_data(
+            "benchmark publisher must isolate render and deploy",
+        ));
+    }
+    let render = &workflow["jobs"]["render"];
+    let deploy = &workflow["jobs"]["deploy"];
+    let condition = render["if"]
+        .as_str()
+        .map(|value| value.split_whitespace().collect::<Vec<_>>().join(" "));
+    let expected_condition = concat!(
+        "github.repository == 'arthurianresolve/fs2-turbo' && ",
+        "github.event.workflow_run.conclusion == 'success' && ",
+        "github.event.workflow_run.head_repository.full_name == github.repository && ",
+        "(github.event.workflow_run.head_branch == 'dev' || ",
+        "github.event.workflow_run.head_branch == github.event.repository.default_branch) && ",
+        "(github.event.workflow_run.event == 'push' || ",
+        "github.event.workflow_run.event == 'workflow_dispatch')"
+    );
+    if workflow["on"]
+        != serde_json::json!({
+            "workflow_run": {
+                "workflows": ["Windows benchmark pilot"],
+                "types": ["completed"]
+            }
+        })
+        || condition.as_deref() != Some(expected_condition)
+        || render["permissions"] != serde_json::json!({ "contents": "read", "actions": "read" })
+        || render["outputs"]["ready"] != "${{ steps.render.outputs.ready }}"
+        || deploy["permissions"] != serde_json::json!({ "pages": "write", "id-token": "write" })
+        || deploy["needs"] != "render"
+        || deploy["if"] != "needs.render.outputs.ready == 'true'"
+        || deploy["environment"]["name"] != "github-pages"
+    {
+        return Err(invalid_data(
+            "benchmark publisher permissions, source gates, or deployment dependency drifted",
+        ));
+    }
+    let deploy_object = deploy
+        .as_object()
+        .ok_or_else(|| invalid_data("benchmark deployment must be an object"))?;
+    if deploy_object.keys().any(|key| {
+        !matches!(
+            key.as_str(),
+            "needs"
+                | "if"
+                | "runs-on"
+                | "timeout-minutes"
+                | "permissions"
+                | "environment"
+                | "steps"
+        )
+    }) {
+        return Err(invalid_data(
+            "benchmark deployment has unreviewed configuration",
+        ));
+    }
+    let steps = deploy["steps"]
+        .as_array()
+        .ok_or_else(|| invalid_data("benchmark deployment must define one action"))?;
+    if steps.len() != 1 {
+        return Err(invalid_data("benchmark deployment must define one action"));
+    }
+    let step = steps[0]
+        .as_object()
+        .ok_or_else(|| invalid_data("benchmark deployment step must be an object"))?;
+    if step
+        .keys()
+        .any(|key| !matches!(key.as_str(), "name" | "id" | "uses"))
+        || step.get("id").and_then(Value::as_str) != Some("deployment")
+        || step
+            .get("uses")
+            .and_then(Value::as_str)
+            .and_then(action_repository)
+            != Some("actions/deploy-pages")
+    {
+        return Err(invalid_data(
+            "benchmark deployment may only run the pinned Pages deployment action",
+        ));
+    }
+    validate_workflow_policy_with_pages(workflow, true)
+}
+
+fn validate_publication_action(action: &str) -> Result<()> {
+    let pinned_pages_action = action
+        .rsplit_once('@')
+        .is_some_and(|(repository, revision)| {
+            matches!(
+                repository,
+                "actions/download-artifact"
+                    | "actions/upload-pages-artifact"
+                    | "actions/deploy-pages"
+            ) && revision.len() == 40
+                && revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        });
+    if pinned_pages_action {
+        Ok(())
+    } else {
+        validate_action(action)
+    }
+}
+
+fn validate_workflow_policy_with_pages(workflow: &Value, pages: bool) -> Result<()> {
     let permissions = workflow
         .get("permissions")
         .and_then(Value::as_object)
@@ -384,10 +560,21 @@ fn validate_workflow_policy(workflow: &Value) -> Result<()> {
         let job = job
             .as_object()
             .ok_or_else(|| invalid_data(format!("workflow job {job_name} must be an object")))?;
-        if job.contains_key("permissions") {
-            return Err(invalid_data(format!(
-                "workflow job {job_name} may not override token permissions"
-            )));
+        if let Some(permissions) = job.get("permissions") {
+            let expected = match (pages, job_name.as_str()) {
+                (true, "render") => Some(serde_json::json!({
+                    "contents": "read", "actions": "read"
+                })),
+                (true, "deploy") => Some(serde_json::json!({
+                    "pages": "write", "id-token": "write"
+                })),
+                _ => None,
+            };
+            if expected.as_ref() != Some(permissions) {
+                return Err(invalid_data(format!(
+                    "workflow job {job_name} may not override token permissions"
+                )));
+            }
         }
         if let Some(action) = job.get("uses").and_then(Value::as_str) {
             validate_action(action)?;
@@ -403,7 +590,11 @@ fn validate_workflow_policy(workflow: &Value) -> Result<()> {
                 invalid_data(format!("workflow job {job_name} contains an invalid step"))
             })?;
             if let Some(action) = step.get("uses").and_then(Value::as_str) {
-                validate_action(action)?;
+                if pages {
+                    validate_publication_action(action)?;
+                } else {
+                    validate_action(action)?;
+                }
                 if action_repository(action) == Some("actions/checkout") {
                     validate_checkout_credentials(job_name, step)?;
                 }
@@ -484,14 +675,19 @@ fn action_repository(action: &str) -> Option<&str> {
 }
 
 fn validate_locked_cargo(job_name: &str, command: &str) -> Result<()> {
-    for line in command
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-    {
+    for source_line in command.lines() {
+        let line = command_before_comment(source_line)?.trim();
+        if line.is_empty() {
+            continue;
+        }
         if line.contains("$(") || line.contains('`') {
             return Err(invalid_data(format!(
                 "workflow command substitution is not auditable in {job_name}: {line}"
+            )));
+        }
+        if command_position_is_dynamic(line) {
+            return Err(invalid_data(format!(
+                "workflow command-position expansion is not auditable in {job_name}: {line}"
             )));
         }
         let words = line.split_ascii_whitespace().collect::<Vec<_>>();
@@ -522,6 +718,60 @@ fn validate_locked_cargo(job_name: &str, command: &str) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn command_before_comment(line: &str) -> Result<&str> {
+    let mut quote = None;
+    for (index, character) in line.char_indices() {
+        match quote {
+            Some(expected) if character == expected => quote = None,
+            Some(_) => {}
+            None if matches!(character, '\'' | '"') => quote = Some(character),
+            None if character == '#' => return Ok(&line[..index]),
+            None => {}
+        }
+    }
+    if quote.is_some() {
+        Err(invalid_data(
+            "workflow command contains an unterminated quote",
+        ))
+    } else {
+        Ok(line)
+    }
+}
+
+fn command_position_is_dynamic(line: &str) -> bool {
+    let words = line.split_ascii_whitespace().collect::<Vec<_>>();
+    let mut index = 0usize;
+    while index < words.len() && shell_assignment(words[index]) {
+        index += 1;
+    }
+    loop {
+        let Some(word) = words.get(index).copied() else {
+            return false;
+        };
+        if word.contains('$') || word.starts_with(['\'', '"']) {
+            return true;
+        }
+        if !matches!(word, "env" | "command" | "exec") {
+            return false;
+        }
+        index += 1;
+        while index < words.len()
+            && (words[index].starts_with('-') || shell_assignment(words[index]))
+        {
+            index += 1;
+        }
+    }
+}
+
+fn shell_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    })
 }
 
 fn direct_cargo_command_is_auditable(line: &str) -> bool {
@@ -567,7 +817,7 @@ fn shell_word_skeleton(line: &str) -> String {
                     }
                     expansion.push(expanded);
                 }
-                if expansion.eq_ignore_ascii_case("cargo") {
+                if expansion.to_ascii_lowercase().contains("cargo") {
                     skeleton.push_str("cargo");
                 }
             }
@@ -692,6 +942,7 @@ mod tests {
     fn repository_registry_and_workflow_agree() {
         let registry = repository_registry();
         validate_registry(&registry, "1.88.0").unwrap();
+        validate_workflow_directory(crate::repository_root(), &registry).unwrap();
         let workflow =
             load_workflow(&crate::repository_root().join(".github/workflows/ci.yml")).unwrap();
         validate_workflow(&registry, &workflow).unwrap();
@@ -699,6 +950,67 @@ mod tests {
             load_workflow(&crate::repository_root().join(".github/workflows/release-gates.yml"))
                 .unwrap();
         validate_release_workflow(&release_gates).unwrap();
+    }
+
+    #[test]
+    fn benchmark_publication_policy_preserves_privilege_boundaries() {
+        let workflow = load_workflow(
+            &crate::repository_root().join(".github/workflows/benchmark-results.yml"),
+        )
+        .unwrap();
+        validate_benchmark_publication_workflow(&workflow).unwrap();
+        assert!(validate_workflow_policy(&workflow).is_err());
+
+        let mut write = workflow.clone();
+        write["permissions"]["contents"] = serde_json::json!("write");
+        assert!(validate_benchmark_publication_workflow(&write).is_err());
+
+        let mut render_write = workflow.clone();
+        render_write["jobs"]["render"]["permissions"]["contents"] = serde_json::json!("write");
+        assert!(validate_benchmark_publication_workflow(&render_write).is_err());
+
+        let mut deploy_contents = workflow.clone();
+        deploy_contents["jobs"]["deploy"]["permissions"]["contents"] = serde_json::json!("write");
+        assert!(validate_benchmark_publication_workflow(&deploy_contents).is_err());
+
+        let mut shell = workflow.clone();
+        shell["jobs"]["deploy"]["steps"][0]["run"] = serde_json::json!("echo unreviewed");
+        assert!(validate_benchmark_publication_workflow(&shell).is_err());
+
+        let mut extra_job = workflow.clone();
+        extra_job["jobs"]["extra"] = serde_json::json!({});
+        assert!(validate_benchmark_publication_workflow(&extra_job).is_err());
+
+        let mut mutable = workflow;
+        mutable["jobs"]["deploy"]["steps"][0]["uses"] =
+            serde_json::json!("actions/deploy-pages@v5");
+        assert!(validate_benchmark_publication_workflow(&mutable).is_err());
+    }
+
+    #[test]
+    fn benchmark_publication_policy_binds_success_and_readiness() {
+        let workflow = load_workflow(
+            &crate::repository_root().join(".github/workflows/benchmark-results.yml"),
+        )
+        .unwrap();
+        for pointer in [
+            "/jobs/render/if",
+            "/jobs/render/outputs/ready",
+            "/jobs/deploy/if",
+            "/jobs/deploy/needs",
+            "/jobs/deploy/environment/name",
+        ] {
+            let mut changed = workflow.clone();
+            *changed.pointer_mut(pointer).unwrap() = serde_json::json!("true");
+            assert!(validate_benchmark_publication_workflow(&changed).is_err());
+        }
+        let mut trigger = workflow;
+        trigger["on"] = serde_json::json!({ "pull_request": {} });
+        assert!(validate_benchmark_publication_workflow(&trigger).is_err());
+        assert!(
+            validate_action("actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346")
+                .is_err()
+        );
     }
 
     #[test]
@@ -744,6 +1056,14 @@ mod tests {
         assert!(validate_locked_cargo("test", "/opt/rust/bin/cargo test").is_err());
         assert!(validate_locked_cargo("test", "$CARGO test --locked").is_err());
         assert!(validate_locked_cargo("test", "$env:CARGO test --locked").is_err());
+        assert!(validate_locked_cargo("test", "cargo test # --locked").is_err());
+        assert!(validate_locked_cargo("test", "cargo test --locked # reviewed").is_ok());
+        assert!(validate_locked_cargo("test", "${CARGO:-cargo} test --locked").is_err());
+        assert!(validate_locked_cargo("test", "${CARGO-cargo} test --locked").is_err());
+        assert!(validate_locked_cargo("test", "${CARGO} test --locked").is_err());
+        assert!(validate_locked_cargo("test", r#""${CARGO:-cargo}" test"#).is_err());
+        assert!(validate_locked_cargo("test", r#"MODE=ci "${TOOL}" test"#).is_err());
+        assert!(validate_locked_cargo("test", r#"env "${TOOL}" test"#).is_err());
         assert!(validate_locked_cargo("test", "cargo.cmd test").is_err());
         assert!(
             validate_locked_cargo("test", "cargo check --locked && cargo test --locked").is_err()
@@ -795,6 +1115,46 @@ mod tests {
         string_false["jobs"]["test"]["steps"][0]["with"]["persist-credentials"] =
             serde_json::json!("false");
         assert!(validate_workflow_policy(&string_false).is_err());
+    }
+
+    #[test]
+    fn workflow_directory_applies_policy_to_every_yaml_file() {
+        let repository = crate::repository_root();
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join(".github/workflows");
+        fs::create_dir_all(&directory).unwrap();
+        for name in ["ci.yml", "release-gates.yml"] {
+            fs::copy(
+                repository.join(".github/workflows").join(name),
+                directory.join(name),
+            )
+            .unwrap();
+        }
+        let registry = repository_registry();
+        let custom = directory.join("custom.yaml");
+        fs::write(
+            &custom,
+            serde_yaml_ng::to_string(&minimal_policy_workflow()).unwrap(),
+        )
+        .unwrap();
+        assert!(validate_workflow_directory(temporary.path(), &registry).is_ok());
+
+        let mut invalid = minimal_policy_workflow();
+        invalid["permissions"]["contents"] = serde_json::json!("write");
+        for name in ["untrusted.yml", "untrusted.yaml"] {
+            let path = directory.join(name);
+            fs::write(&path, serde_yaml_ng::to_string(&invalid).unwrap()).unwrap();
+            assert!(validate_workflow_directory(temporary.path(), &registry).is_err());
+            fs::remove_file(path).unwrap();
+        }
+
+        fs::write(
+            &custom,
+            serde_yaml_ng::to_string(&minimal_policy_workflow()).unwrap(),
+        )
+        .unwrap();
+        fs::write(directory.join("README.md"), "not a workflow\n").unwrap();
+        assert!(validate_workflow_directory(temporary.path(), &registry).is_err());
     }
 
     #[test]

@@ -1,0 +1,25 @@
+{
+  "version": 5,
+  "evidence_levels": ["runtime", "compile", "not-covered"],
+  "targets": [
+    {"target": "x86_64-unknown-linux-gnu", "platform": "Linux", "evidence": "runtime", "allocation": "physical-reservation", "ci": {"job": "check", "runner": "ubuntu-latest", "toolchains": ["1.88.0", "stable"], "coverage": true}},
+    {"target": "x86_64-apple-darwin", "platform": "macOS Intel", "evidence": "runtime", "allocation": "physical-reservation", "ci": {"job": "check", "runner": "macos-15-intel", "toolchains": ["1.88.0", "stable"]}},
+    {"target": "aarch64-apple-darwin", "platform": "macOS Apple silicon", "evidence": "runtime", "allocation": "physical-reservation", "ci": {"job": "check", "runner": "macos-latest", "toolchains": ["1.88.0", "stable"], "coverage": true}},
+    {"target": "x86_64-pc-windows-msvc", "platform": "Windows MSVC", "evidence": "runtime", "allocation": "physical-reservation", "ci": {"job": "check", "runner": "windows-latest", "toolchains": ["1.88.0", "stable"], "coverage": true}},
+    {"target": "i686-unknown-linux-gnu", "platform": "32-bit Linux", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "aarch64-unknown-linux-gnu", "platform": "ARM64 Linux GNU", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "aarch64-unknown-linux-musl", "platform": "ARM64 Linux musl", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "powerpc64-unknown-linux-gnu", "platform": "PowerPC64 Linux GNU", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "riscv64gc-unknown-linux-gnu", "platform": "RISC-V 64 Linux GNU", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "aarch64-linux-android", "platform": "ARM64 Android", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "i686-linux-android", "platform": "32-bit x86 Android", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "aarch64-pc-windows-msvc", "platform": "ARM64 Windows MSVC", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "i686-pc-windows-gnu", "platform": "32-bit Windows GNU", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "mingw", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "x86_64-pc-windows-gnu", "platform": "Windows GNU", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "mingw", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "x86_64-unknown-freebsd", "platform": "FreeBSD", "evidence": "compile", "allocation": "physical-reservation", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "x86_64-unknown-netbsd", "platform": "NetBSD", "evidence": "compile", "allocation": "unsupported", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "x86_64-unknown-illumos", "platform": "Illumos", "evidence": "compile", "allocation": "unsupported", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "x86_64-unknown-redox", "platform": "Redox", "evidence": "compile", "allocation": "unsupported", "ci": {"job": "cross_check", "runner": "ubuntu-latest", "toolchains": ["1.88.0"]}},
+    {"target": "armv7-unknown-linux-uclibceabihf", "platform": "ARM uClibc", "evidence": "compile", "allocation": "unsupported", "ci": {"job": "uclibc", "runner": "ubuntu-latest", "toolchains": ["nightly"]}}
+  ]
+}

@@ -13,7 +13,10 @@ categories = ["filesystem"]
 exclude = [
     ".cargo/",
     ".github/",
+    "artifacts/",
+    "benchmark-report.md",
     "benchmarks/",
+    "BENCHMARK_VALIDATION_HISTORICAL.md",
     "compatibility/",
     "CONTEXT.md",
     "deny.toml",

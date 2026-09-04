@@ -1,0 +1,61 @@
+name: Windows benchmark pilot
+
+"on":
+  push:
+    branches: ["**"]
+  workflow_dispatch:
+    inputs:
+      trust_selected_code:
+        description: I reviewed the protected branch code, which executes unsandboxed
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-benchmark-pilot-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  pilot:
+    if: >-
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      (github.ref_name == 'dev' || github.ref_name == github.event.repository.default_branch) &&
+      (github.event_name == 'push' || inputs.trust_selected_code)
+    runs-on: windows-2022
+    timeout-minutes: 330
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - id: harness
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          # Keep the default branch's library unchanged. Its harness is the
+          # protected dev checkout, whose resolved SHA is recorded separately.
+          ref: ${{ github.ref_name == 'dev' && github.sha || 'dev' }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run the fixed, non-admin paired pilot
+        id: pilot
+        timeout-minutes: 300
+        env:
+          PILOT_CANDIDATE_SHA: ${{ github.sha }}
+          PILOT_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PILOT_WORKFLOW_SHA: ${{ steps.harness.outputs.commit }}
+        run: |
+          ./tools/ci/windows-benchmark-pilot.ps1 -CandidateSha $env:PILOT_CANDIDATE_SHA -WorkflowSha $env:PILOT_WORKFLOW_SHA
+          exit $LASTEXITCODE
+      - name: Retain pilot evidence, including rejected runs
+        if: always() && steps.pilot.outputs.pilot_root != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pilot-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ steps.pilot.outputs.pilot_root }}/audit
+            ${{ steps.pilot.outputs.pilot_root }}/measurements
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14

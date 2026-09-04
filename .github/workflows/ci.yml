@@ -1,0 +1,184 @@
+name: CI
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 1 1 * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  support-matrix:
+    name: Validate support matrix
+    outputs:
+      rust_version: ${{ steps.matrix.outputs.rust_version }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.88.0"
+      - id: matrix
+        run: cargo xtask matrix --github-output "$GITHUB_OUTPUT"
+      - run: cargo test --package fs2-dev --locked
+
+  check:
+    needs: support-matrix
+    name: ${{ matrix.os }} / Rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, toolchain: stable }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, toolchain: "1.88.0" }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, toolchain: stable }
+          - { os: macos-latest, target: aarch64-apple-darwin, toolchain: "1.88.0" }
+          - { os: macos-latest, target: aarch64-apple-darwin, toolchain: stable }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, toolchain: "1.88.0" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, toolchain: stable }
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --package fs2-turbo --all-targets --target "${{ matrix.target }}" --locked -- -D warnings
+      - run: cargo test --package fs2-turbo --target "${{ matrix.target }}" --locked
+      - run: cargo test --package fs2-dev --target "${{ matrix.target }}" --locked
+      - if: matrix.toolchain == needs.support-matrix.outputs.rust_version
+        run: cargo xtask compatibility
+      - run: cargo bench --manifest-path benchmarks/Cargo.toml --no-run --locked --target "${{ matrix.target }}"
+      - run: cargo check --manifest-path benchmarks/Cargo.toml --bin fs2-paired-stats-smoke --features paired-tools --locked --target "${{ matrix.target }}"
+
+  cross_check:
+    needs: support-matrix
+    name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: i686-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: powerpc64-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: riscv64gc-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: aarch64-linux-android, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: i686-linux-android, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: aarch64-pc-windows-msvc, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-freebsd, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-netbsd, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-illumos, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-redox, toolchain: "1.88.0" }
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+      - run: cargo check --package fs2-turbo --tests --target "${{ matrix.target }}" --locked
+
+  mingw:
+    needs: support-matrix
+    name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: i686-pc-windows-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-pc-windows-gnu, toolchain: "1.88.0" }
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Install MinGW import-library tools
+        run: |
+          ubuntu_sources=/etc/apt/sources.list
+          if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
+            ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+          fi
+          sudo apt-get \
+            -o Dir::Etc::sourcelist="$ubuntu_sources" \
+            -o Dir::Etc::sourceparts=- \
+            update
+          sudo apt-get \
+            -o Dir::Etc::sourcelist="$ubuntu_sources" \
+            -o Dir::Etc::sourceparts=- \
+            install -y --no-install-recommends binutils-mingw-w64
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: ${{ matrix.target }}
+      - run: cargo build --package fs2-turbo --lib --target "${{ matrix.target }}" --locked
+
+  uclibc:
+    needs: support-matrix
+    name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: armv7-unknown-linux-uclibceabihf, toolchain: nightly }
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rust-src
+      - run: cargo check -Z build-std=std,panic_abort --package fs2-turbo --target "${{ matrix.target }}" --lib --locked
+
+  coverage:
+    needs: support-matrix
+    name: Coverage / ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: macos-latest, target: aarch64-apple-darwin, toolchain: "1.88.0" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, toolchain: "1.88.0" }
+
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: llvm-tools-preview
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@13608cbb45b01feb47ef444ab1a42dc41ad56f1a # v2.79.11
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --lcov --output-path "coverage-${{ matrix.target }}.lcov" -- --test-threads=1
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-${{ matrix.target }}
+          path: coverage-${{ matrix.target }}.lcov
+          if-no-files-found: error
