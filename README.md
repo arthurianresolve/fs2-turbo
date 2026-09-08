@@ -8,7 +8,7 @@ It uses Rust 2024 and requires Rust 1.88.0 or newer.
 The original implementation is from
 [danburkert/fs2-rs](https://github.com/danburkert/fs2-rs). This maintained fork
 lives at
-[github.com/arthurianresolve/fs2-rs](https://github.com/arthurianresolve/fs2-rs).
+[github.com/arthurianresolve/fs2-turbo](https://github.com/arthurianresolve/fs2-turbo).
 
 [![Documentation](https://docs.rs/fs2/badge.svg)](https://docs.rs/fs2)
 [![Crate](https://img.shields.io/crates/v/fs2.svg)](https://crates.io/crates/fs2)

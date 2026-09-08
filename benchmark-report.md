@@ -1,4 +1,4 @@
-# fs2-rs comparative benchmark
+# fs2-turbo comparative benchmark
 
 Baseline: origin/0.4.3 at 9a340454a8292df025de368fc4b310bb736f382f
 Measured candidate: dev at a10f82678eebf5b9235908b42c4378de57a37c6b
