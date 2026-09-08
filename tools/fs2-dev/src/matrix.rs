@@ -200,14 +200,14 @@ fn package_rust_version(root: &Path) -> Result<String> {
     command
         .current_dir(root)
         .args(["metadata", "--no-deps", "--format-version", "1", "--locked"]);
-    let output = process::capture(&mut command, "read fs2 package metadata")?;
+    let output = process::capture(&mut command, "read fs2-turbo package metadata")?;
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
     metadata
         .packages
         .into_iter()
-        .find(|package| package.name == "fs2")
+        .find(|package| package.name == "fs2-turbo")
         .and_then(|package| package.rust_version)
-        .ok_or_else(|| invalid_data("cargo metadata did not provide fs2 rust-version"))
+        .ok_or_else(|| invalid_data("cargo metadata did not provide fs2-turbo rust-version"))
 }
 
 fn validate_registry(registry: &SupportRegistry, rust_version: &str) -> Result<()> {

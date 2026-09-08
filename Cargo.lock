@@ -288,21 +288,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d45db016d36b838f563236e9193d0ee6ce38f3f68b6c94e914b4929c96bbb890"
 
 [[package]]
-name = "fs2"
-version = "0.4.3"
-dependencies = [
- "cfg-if",
- "libc",
- "tempfile",
- "windows-sys",
-]
-
-[[package]]
 name = "fs2-benchmarks"
 version = "0.0.0"
 dependencies = [
  "criterion",
- "fs2",
+ "fs2-turbo",
  "tempfile",
 ]
 
@@ -311,7 +301,7 @@ name = "fs2-dev"
 version = "0.0.0"
 dependencies = [
  "clap",
- "fs2",
+ "fs2-turbo",
  "libc",
  "rustix",
  "serde",
@@ -321,6 +311,16 @@ dependencies = [
  "tempfile",
  "wait-timeout",
  "walkdir",
+ "windows-sys",
+]
+
+[[package]]
+name = "fs2-turbo"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "tempfile",
  "windows-sys",
 ]
 

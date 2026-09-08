@@ -1040,14 +1040,7 @@ mod tests {
 
     #[cfg(windows)]
     fn publication_tempdir() -> tempfile::TempDir {
-        let parent = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .expect("fs2-dev is nested beneath the workspace root")
-            .join("target")
-            .join("fs2-dev-publication-tests");
-        drop(super::super::windows_security::create_or_open_private_directory(&parent).unwrap());
-        tempfile::Builder::new().tempdir_in(parent).unwrap()
+        super::super::windows_security::private_test_tempdir()
     }
 
     #[cfg(not(windows))]

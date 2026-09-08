@@ -13,7 +13,7 @@ subject-fs4 = []
 
 [dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
-fs2 = { path = ".." }
+fs2 = { package = "fs2-turbo", path = ".." }
 tempfile = "3.27"
 
 [[bin]]

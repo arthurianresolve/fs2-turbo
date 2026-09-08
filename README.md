@@ -1,17 +1,25 @@
-# fs2
+# fs2-turbo
 
-`fs2` provides cross-platform file locking, allocation, duplication, and
-filesystem statistics. Version 1.0 preserves the public fs2 0.4 API while
-retaining the correctness and safety fixes developed in this maintained fork.
-It uses Rust 2024 and requires Rust 1.88.0 or newer.
+`fs2-turbo` provides cross-platform file locking, allocation, duplication, and
+filesystem statistics. The package exports the `fs2` library crate, so version
+1.0 preserves the public fs2 0.4 API while retaining the correctness and safety
+fixes developed in this maintained fork. It uses Rust 2024 and requires Rust
+1.88.0 or newer.
 
 The original implementation is from
 [danburkert/fs2-rs](https://github.com/danburkert/fs2-rs). This maintained fork
 lives at
-[github.com/arthurianresolve/fs2-rs](https://github.com/arthurianresolve/fs2-rs).
+[github.com/arthurianresolve/fs2-turbo](https://github.com/arthurianresolve/fs2-turbo).
 
-[![Documentation](https://docs.rs/fs2/badge.svg)](https://docs.rs/fs2)
-[![Crate](https://img.shields.io/crates/v/fs2.svg)](https://crates.io/crates/fs2)
+[![Documentation](https://docs.rs/fs2-turbo/badge.svg)](https://docs.rs/fs2-turbo)
+[![Crate](https://img.shields.io/crates/v/fs2-turbo.svg)](https://crates.io/crates/fs2-turbo)
+
+## Installation
+
+```toml
+[dependencies]
+fs2 = { package = "fs2-turbo", version = "1" }
+```
 
 ## Features
 
@@ -52,7 +60,7 @@ collision-safe migration code.
 
 ## Platforms
 
-`fs2` supports the Unix and Windows targets implemented by the platform
+The `fs2` library supports the Unix and Windows targets implemented by the platform
 adapters in this repository. Unix support uses
 [`libc`](https://github.com/rust-lang/libc); Windows support uses
 [`windows-sys`](https://github.com/microsoft/windows-rs).
@@ -183,7 +191,7 @@ fixtures, and benchmarks are excluded from the published crate.
 
 ## License
 
-`fs2` is primarily distributed under the terms of both the MIT license and the
+`fs2-turbo` is primarily distributed under the terms of both the MIT license and the
 Apache License (Version 2.0).
 
 See [LICENSE-APACHE](LICENSE-APACHE), [LICENSE-MIT](LICENSE-MIT) for details.

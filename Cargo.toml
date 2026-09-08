@@ -1,12 +1,13 @@
 [package]
-name = "fs2"
-version = "0.4.3"
+name = "fs2-turbo"
+version = "1.0.0"
 edition.workspace = true
 rust-version.workspace = true
 authors = ["Dan Burkert <dan@danburkert.com>"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/arthurianresolve/fs2-rs"
-documentation = "https://docs.rs/fs2"
+repository = "https://github.com/arthurianresolve/fs2-turbo"
+homepage = "https://github.com/arthurianresolve/fs2-turbo"
+documentation = "https://docs.rs/fs2-turbo"
 description = "Cross-platform file locks, allocation, duplication and filesystem statistics."
 keywords = ["file", "file-system", "lock", "duplicate", "flock"]
 categories = ["filesystem"]
@@ -23,6 +24,9 @@ exclude = [
     "support-matrix.json",
     "tools/",
 ]
+
+[lib]
+name = "fs2"
 
 [workspace]
 members = ["benchmarks", "tools/fs2-dev"]

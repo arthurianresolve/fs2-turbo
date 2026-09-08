@@ -19,44 +19,44 @@ dependencies = [
 ]
 
 [[package]]
-name = "fs2"
-version = "1.0.0"
-dependencies = [
- "cfg-if",
- "libc",
- "windows-sys",
-]
-
-[[package]]
 name = "fs2-compat-edition-2015"
 version = "0.0.0"
 dependencies = [
- "fs2 0.4.3",
- "fs2 1.0.0",
+ "fs2",
+ "fs2-turbo",
 ]
 
 [[package]]
 name = "fs2-compat-edition-2018"
 version = "0.0.0"
 dependencies = [
- "fs2 0.4.3",
- "fs2 1.0.0",
+ "fs2",
+ "fs2-turbo",
 ]
 
 [[package]]
 name = "fs2-compat-edition-2021"
 version = "0.0.0"
 dependencies = [
- "fs2 0.4.3",
- "fs2 1.0.0",
+ "fs2",
+ "fs2-turbo",
 ]
 
 [[package]]
 name = "fs2-compat-edition-2024"
 version = "0.0.0"
 dependencies = [
- "fs2 0.4.3",
- "fs2 1.0.0",
+ "fs2",
+ "fs2-turbo",
+]
+
+[[package]]
+name = "fs2-turbo"
+version = "1.0.0"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-sys",
 ]
 
 [[package]]

@@ -1159,6 +1159,27 @@ fn encode_path(path: &Path) -> Vec<u16> {
         .collect()
 }
 
+#[cfg(test)]
+pub(super) fn private_test_tempdir() -> tempfile::TempDir {
+    // GitHub-hosted runners redirect TEMP beneath the shared D:\a tree. Keep
+    // security fixtures under a per-user root that satisfies the real policy.
+    let base = ["USERPROFILE", "LOCALAPPDATA"]
+        .into_iter()
+        .filter_map(std::env::var_os)
+        .map(std::path::PathBuf::from)
+        .find(|path| path.is_absolute() && path.is_dir())
+        .expect("Windows tests require LOCALAPPDATA or USERPROFILE");
+    let parent = base.join("fs2-dev-test-fixtures");
+    drop(create_or_open_trusted_directory_ancestry(&parent).unwrap());
+
+    let temporary = tempfile::Builder::new()
+        .prefix("fs2-dev-")
+        .tempdir_in(parent)
+        .unwrap();
+    drop(harden_new_private_directory(temporary.path()).unwrap());
+    temporary
+}
+
 struct OwnedHandle(HANDLE);
 
 impl Drop for OwnedHandle {
@@ -1178,7 +1199,7 @@ mod tests {
     static MAPPED_DRIVE_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn private_tempdir() -> tempfile::TempDir {
-        tempfile::tempdir_in(std::env::current_dir().unwrap()).unwrap()
+        private_test_tempdir()
     }
 
     #[test]
@@ -1455,25 +1476,4 @@ mod tests {
             AncestorRole::VolumeRoot,
         ));
     }
-}
-
-#[cfg(test)]
-pub(super) fn private_test_tempdir() -> tempfile::TempDir {
-    // GitHub-hosted runners redirect TEMP beneath the shared D:\\a tree. Keep
-    // security fixtures under a per-user root that satisfies the real policy.
-    let base = ["USERPROFILE", "LOCALAPPDATA"]
-        .into_iter()
-        .filter_map(std::env::var_os)
-        .map(std::path::PathBuf::from)
-        .find(|path| path.is_absolute() && path.is_dir())
-        .expect("Windows tests require LOCALAPPDATA or USERPROFILE");
-    let parent = base.join("fs2-dev-test-fixtures");
-    drop(create_or_open_trusted_directory_ancestry(&parent).unwrap());
-
-    let temporary = tempfile::Builder::new()
-        .prefix("fs2-dev-")
-        .tempdir_in(parent)
-        .unwrap();
-    drop(harden_new_private_directory(temporary.path()).unwrap());
-    temporary
 }
