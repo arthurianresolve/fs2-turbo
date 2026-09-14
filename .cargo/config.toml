@@ -1,0 +1,2 @@
+[alias]
+xtask = "run --locked --package fs2-dev --"

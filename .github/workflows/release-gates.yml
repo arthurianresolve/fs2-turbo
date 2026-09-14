@@ -1,0 +1,108 @@
+name: Release gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  toolchains:
+    name: Rust ${{ matrix.rust }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.88.0", "1.98.1"]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Check workspace
+        run: cargo check --workspace --all-targets --locked
+      - name: Test workspace
+        run: cargo test --workspace --locked
+      - name: Run strict Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --package fs2-turbo --lib --no-deps --locked
+      - name: Validate support metadata
+        run: cargo xtask matrix
+      - name: Reject host-specific paths in tracked evidence
+        shell: bash
+        run: |
+          if git grep -n -E '[A-Za-z]:\\Users\\[^\\[:space:]]+|/(Users|home)/[^/[:space:]]+' -- 'artifacts/**'; then
+            echo "tracked evidence contains a host-specific user-profile path" >&2
+            exit 1
+          fi
+      - name: Compile compatibility fixtures
+        run: cargo xtask compatibility
+      - name: Check future incompatibilities
+        if: matrix.rust == '1.98.1'
+        run: cargo check --workspace --all-targets --locked --future-incompat-report
+
+  package:
+    name: Published package
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install MSRV
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: List package contents
+        run: |
+          cargo package --locked --list > "$RUNNER_TEMP/package-files.txt"
+          cat "$RUNNER_TEMP/package-files.txt"
+      - name: Reject repository-only files
+        run: |
+          if grep -E '^(artifacts|compatibility|tools|\.cargo|\.github)/|^(deny\.toml|support-matrix\.json|CONTEXT\.md)$' "$RUNNER_TEMP/package-files.txt"; then
+            echo "repository-only files entered the fs2 package" >&2
+            exit 1
+          fi
+      - name: Build package
+        run: cargo package --locked
+
+  dependencies:
+    name: Dependency policy and vulnerabilities
+    runs-on: ubuntu-latest
+    env:
+      RUSTUP_TOOLCHAIN: "1.98.1"
+      RUSTUP_DIST_SERVER: "https://dev-static.rust-lang.org"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+      - name: Check dependency policy
+        run: cargo deny check
+      - name: Audit vulnerabilities
+        run: cargo audit
