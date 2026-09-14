@@ -124,7 +124,7 @@ pub(crate) fn run(root: &Path) -> Result<()> {
 fn validate_resolved_fs2(root: &Path, packages: &[CargoPackage]) -> Result<()> {
     let resolved = packages
         .iter()
-        .filter(|package| package.name == "fs2")
+        .filter(|package| package.name == "fs2" || package.name == "fs2-turbo")
         .collect::<Vec<_>>();
     let legacy = resolved.iter().any(|package| {
         package.version == "0.4.3"
@@ -141,7 +141,7 @@ fn validate_resolved_fs2(root: &Path, packages: &[CargoPackage]) -> Result<()> {
     });
     if resolved.len() != 2 || !legacy || !current {
         return Err(invalid_data(
-            "resolved compatibility graph must contain only approved fs2 0.4.3 and the current checkout",
+            "resolved compatibility graph must contain only approved fs2 0.4.3 and the current fs2-turbo checkout",
         ));
     }
     Ok(())
@@ -153,10 +153,11 @@ fn validate_lockfile(path: &Path) -> Result<()> {
         "name = \"fs2\"\nversion = \"0.4.3\"\nsource = \"registry+https://github.com/rust-lang/crates.io-index\"\nchecksum = \"{LEGACY_CHECKSUM}\""
     );
     if !contents.replace("\r\n", "\n").contains(&legacy)
-        || contents.matches("name = \"fs2\"").count() != 2
+        || contents.matches("name = \"fs2\"").count() != 1
+        || contents.matches("name = \"fs2-turbo\"").count() != 1
     {
         return Err(invalid_data(
-            "compatibility lockfile does not contain exactly the approved legacy and current fs2 packages",
+            "compatibility lockfile does not contain exactly one approved legacy fs2 package and one current fs2-turbo package",
         ));
     }
     Ok(())
@@ -240,7 +241,7 @@ fn validate_dependencies(root: &Path, packages: &[CargoPackage]) -> Result<()> {
                 && dependency.features.is_empty()
         });
         let current_path = package.dependencies.iter().any(|dependency| {
-            dependency.name == "fs2"
+            dependency.name == "fs2-turbo"
                 && dependency.rename.as_deref() == Some("fs2_current")
                 && dependency.source.is_none()
                 && dependency
@@ -256,7 +257,7 @@ fn validate_dependencies(root: &Path, packages: &[CargoPackage]) -> Result<()> {
         });
         if package.dependencies.len() != 2 || !legacy || !current_path {
             return Err(invalid_data(format!(
-                "{} must depend only on exact fs2 0.4.3 and the current checkout",
+                "{} must depend only on exact fs2 0.4.3 and the current fs2-turbo checkout",
                 package.name
             )));
         }
