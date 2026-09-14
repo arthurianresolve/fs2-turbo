@@ -737,6 +737,13 @@ fn is_target_triple(value: &str) -> bool {
 }
 
 fn pinned_action(action: &str) -> bool {
+    if matches!(
+        action,
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+            | "codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f"
+    ) {
+        return true;
+    }
     action
         .rsplit_once('@')
         .is_some_and(|(repository, revision)| {
@@ -883,6 +890,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn coverage_actions_require_reviewed_revisions() {
+        for (repository, revision) in [
+            (
+                "actions/download-artifact",
+                "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+            ),
+            (
+                "codecov/codecov-action",
+                "fb8b3582c8e4def4969c97caa2f19720cb33a72f",
+            ),
+        ] {
+            validate_action(&format!("{repository}@{revision}")).unwrap();
+            for unreviewed in ["main", "v7", "0000000000000000000000000000000000000000"] {
+                assert!(validate_action(&format!("{repository}@{unreviewed}")).is_err());
+            }
+        }
+    }
+
     fn minimal_policy_workflow() -> Value {
         serde_json::json!({
             "permissions": { "contents": "read" },
@@ -912,6 +938,8 @@ mod tests {
 
         let mut job_override = minimal_policy_workflow();
         job_override["jobs"]["test"]["permissions"] = serde_json::json!({ "contents": "write" });
+        assert!(validate_workflow_policy(&job_override).is_err());
+        job_override["jobs"]["test"]["permissions"] = serde_json::json!({ "contents": "read" });
         assert!(validate_workflow_policy(&job_override).is_err());
     }
 

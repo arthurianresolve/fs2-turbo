@@ -151,6 +151,7 @@ jobs:
 
   coverage:
     needs: support-matrix
+    timeout-minutes: 20
     name: Coverage / ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -174,9 +175,54 @@ jobs:
         with:
           tool: cargo-llvm-cov@0.8.7
           fallback: none
-      - run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --lcov --output-path "coverage-${{ matrix.target }}.lcov" -- --test-threads=1
+      - run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --remap-path-prefix --lcov --output-path "coverage-${{ matrix.target }}.lcov" -- --test-threads=1
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-${{ matrix.target }}
           path: coverage-${{ matrix.target }}.lcov
           if-no-files-found: error
+
+  codecov:
+    name: Publish release coverage
+    needs: coverage
+    if: >-
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      github.ref == 'refs/heads/1.0.0' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: coverage-*
+          path: coverage
+          merge-multiple: true
+      - name: Require authentication and all native coverage reports
+        shell: bash
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        run: |
+          if [[ -z "$CODECOV_TOKEN" ]]; then
+            echo "::error::The CODECOV_TOKEN repository secret is required."
+            exit 1
+          fi
+          for target in x86_64-unknown-linux-gnu aarch64-apple-darwin x86_64-pc-windows-msvc; do
+            report="coverage/coverage-$target.lcov"
+            if [[ ! -s "$report" ]] || ! grep -q '^SF:' "$report" || ! grep -q '^DA:' "$report"; then
+              echo "::error::Missing, empty, or incomplete coverage report: $report"
+              exit 1
+            fi
+          done
+      - name: Upload combined native coverage
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-x86_64-unknown-linux-gnu.lcov,coverage/coverage-aarch64-apple-darwin.lcov,coverage/coverage-x86_64-pc-windows-msvc.lcov
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          name: release-1.0.0-native

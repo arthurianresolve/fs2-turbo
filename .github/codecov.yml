@@ -1,0 +1,32 @@
+codecov:
+  branch: "1.0.0"
+  strict_yaml_branch: "1.0.0"
+  require_ci_to_pass: true
+  notify:
+    # One upload contains all three native coverage reports from the same run.
+    after_n_builds: 1
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0
+        if_not_found: failure
+        if_ci_failed: error
+        branches:
+          - "1.0.0"
+    patch:
+      default:
+        target: auto
+        threshold: 0
+        if_not_found: failure
+        if_ci_failed: error
+        branches:
+          - "1.0.0"
+
+# Publication is release-branch-only; do not post incomplete PR commentary.
+comment: false
