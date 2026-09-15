@@ -103,7 +103,11 @@ fn cross_process_exclusive_lock_is_observed() {
     file.fs2_lock_exclusive().unwrap();
 
     let status = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "cross_process_lock_probe", "--nocapture"])
+        .args([
+            "--exact",
+            "lock_contract::cross_process_lock_probe",
+            "--nocapture",
+        ])
         .env("FS2_LOCK_PROBE_PATH", &path)
         .status()
         .unwrap();

@@ -25,11 +25,25 @@ fn upstream_method_syntax<T: FileExt>(file: &T) -> Result<()> {
 
 #[test]
 fn upstream_named_generic_function_items() {
-    let _: fn(PathBuf) -> Result<FsStats> = statvfs::<PathBuf>;
-    let _: fn(PathBuf) -> Result<u64> = free_space::<PathBuf>;
-    let _: fn(PathBuf) -> Result<u64> = available_space::<PathBuf>;
-    let _: fn(PathBuf) -> Result<u64> = total_space::<PathBuf>;
-    let _: fn(PathBuf) -> Result<u64> = allocation_granularity::<PathBuf>;
+    let statvfs_path: fn(PathBuf) -> Result<FsStats> = statvfs::<PathBuf>;
+    let free_space_path: fn(PathBuf) -> Result<u64> = free_space::<PathBuf>;
+    let available_space_path: fn(PathBuf) -> Result<u64> = available_space::<PathBuf>;
+    let total_space_path: fn(PathBuf) -> Result<u64> = total_space::<PathBuf>;
+    let allocation_granularity_path: fn(PathBuf) -> Result<u64> = allocation_granularity::<PathBuf>;
+
+    let tempdir = tempdir().unwrap();
+    let path = tempdir.path().to_path_buf();
+    let stats = statvfs_path(path.clone()).unwrap();
+    let free = free_space_path(path.clone()).unwrap();
+    let available = available_space_path(path.clone()).unwrap();
+    let total = total_space_path(path.clone()).unwrap();
+
+    assert!(free <= total);
+    assert!(available <= total);
+    assert_eq!(
+        allocation_granularity_path(path).unwrap(),
+        stats.allocation_granularity()
+    );
 }
 
 #[test]

@@ -23,7 +23,27 @@ struct Totals {
 }
 
 #[derive(Debug, Deserialize)]
+struct FileTotals {
+    instantiations: Metric,
+}
+
+#[derive(Debug, Deserialize)]
+struct CoverageFile {
+    filename: String,
+    summary: FileTotals,
+}
+
+#[derive(Debug, Deserialize)]
+struct FunctionCoverage {
+    count: u64,
+    filenames: Vec<String>,
+    regions: Vec<Vec<u64>>,
+}
+
+#[derive(Debug, Deserialize)]
 struct CoverageData {
+    files: Vec<CoverageFile>,
+    functions: Vec<FunctionCoverage>,
     totals: Totals,
 }
 
@@ -49,6 +69,23 @@ struct CoveragePolicy {
     maximum_uncovered_regions: u64,
 }
 
+#[derive(Debug, Eq, PartialEq)]
+struct FileInstantiationGap {
+    filename: String,
+    uncovered: u64,
+    count: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct InstantiationDiagnostics {
+    entry_count: u64,
+    executed_entries: u64,
+    definition_groups: u64,
+    covered_definition_groups: u64,
+    asymmetric_definition_groups: u64,
+    file_gaps: Vec<FileInstantiationGap>,
+}
+
 pub(crate) fn run(target: &str, json_path: &Path, lcov_path: &Path) -> Result<()> {
     let policy = policy_for_target(target)?;
     let export = parse_json(&fs::read_to_string(json_path)?)?;
@@ -61,6 +98,7 @@ pub(crate) fn run(target: &str, json_path: &Path, lcov_path: &Path) -> Result<()
         .ok_or_else(|| invalid_data("coverage JSON must contain exactly one data set"))?;
 
     validate(target, policy, &data.totals, physical_lines)?;
+    let diagnostics = instantiation_diagnostics(data)?;
     println!(
         "coverage policy satisfied for {target}: unique lines {}/{}, LLVM lines {}/{}, regions {}/{}, functions {}/{}, instantiations {}/{} (diagnostic)",
         physical_lines.covered,
@@ -74,7 +112,98 @@ pub(crate) fn run(target: &str, json_path: &Path, lcov_path: &Path) -> Result<()
         data.totals.instantiations.covered,
         data.totals.instantiations.count,
     );
+    println!(
+        "instantiation structure for {target}: JSON entries {}/{}, source-definition groups {}/{}, asymmetric groups {}",
+        diagnostics.executed_entries,
+        diagnostics.entry_count,
+        diagnostics.covered_definition_groups,
+        diagnostics.definition_groups,
+        diagnostics.asymmetric_definition_groups,
+    );
+    for gap in diagnostics.file_gaps {
+        println!(
+            "instantiation gap for {target}: {} has {}/{} uncovered",
+            gap.filename, gap.uncovered, gap.count
+        );
+    }
     Ok(())
+}
+
+fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnostics> {
+    let mut groups = BTreeMap::<(String, u64, u64), (u64, u64)>::new();
+    let mut entry_count = 0_u64;
+    let mut executed_entries = 0_u64;
+
+    for function in &data.functions {
+        let Some(filename) = function.filenames.first() else {
+            continue;
+        };
+        let Some(region) = function
+            .regions
+            .iter()
+            .find(|region| region.get(7) == Some(&0))
+        else {
+            continue;
+        };
+        let (Some(&line), Some(&column)) = (region.first(), region.get(1)) else {
+            continue;
+        };
+
+        entry_count = entry_count
+            .checked_add(1)
+            .ok_or_else(|| invalid_data("coverage function-entry count overflowed"))?;
+        let group = groups
+            .entry((filename.clone(), line, column))
+            .or_insert((0, 0));
+        group.0 = group
+            .0
+            .checked_add(1)
+            .ok_or_else(|| invalid_data("coverage definition-group count overflowed"))?;
+        if function.count != 0 {
+            executed_entries = executed_entries
+                .checked_add(1)
+                .ok_or_else(|| invalid_data("coverage executed-entry count overflowed"))?;
+            group.1 = group
+                .1
+                .checked_add(1)
+                .ok_or_else(|| invalid_data("coverage covered-group count overflowed"))?;
+        }
+    }
+
+    let mut file_gaps = Vec::new();
+    for file in &data.files {
+        let gap = uncovered(file.summary.instantiations, "file instantiations")?;
+        if gap != 0 {
+            file_gaps.push(FileInstantiationGap {
+                filename: file.filename.clone(),
+                uncovered: gap,
+                count: file.summary.instantiations.count,
+            });
+        }
+    }
+    file_gaps.sort_by(|left, right| {
+        right
+            .uncovered
+            .cmp(&left.uncovered)
+            .then_with(|| left.filename.cmp(&right.filename))
+    });
+
+    Ok(InstantiationDiagnostics {
+        entry_count,
+        executed_entries,
+        definition_groups: groups.len().try_into()?,
+        covered_definition_groups: groups
+            .values()
+            .filter(|(_, covered)| *covered != 0)
+            .count()
+            .try_into()?,
+        asymmetric_definition_groups: groups
+            .values()
+            .filter(|(count, covered)| *covered != 0 && covered < count)
+            .count()
+            .try_into()?,
+        file_gaps,
+    })
 }
 
 fn parse_json(contents: &str) -> Result<CoverageExport> {
@@ -318,6 +447,67 @@ mod tests {
                 }
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn distinguishes_raw_entries_from_source_definition_groups() {
+        let complete = Metric {
+            count: 1,
+            covered: 1,
+        };
+        let data = CoverageData {
+            files: vec![CoverageFile {
+                filename: "src/lib.rs".to_owned(),
+                summary: FileTotals {
+                    instantiations: Metric {
+                        count: 3,
+                        covered: 2,
+                    },
+                },
+            }],
+            functions: vec![
+                FunctionCoverage {
+                    count: 0,
+                    filenames: vec!["src/lib.rs".to_owned()],
+                    regions: vec![vec![7, 1, 7, 8, 0, 0, 0, 0]],
+                },
+                FunctionCoverage {
+                    count: 1,
+                    filenames: vec!["src/lib.rs".to_owned()],
+                    regions: vec![vec![7, 1, 7, 8, 0, 0, 0, 0]],
+                },
+                FunctionCoverage {
+                    count: 1,
+                    filenames: vec!["src/lib.rs".to_owned()],
+                    regions: vec![vec![11, 1, 11, 8, 0, 0, 0, 0]],
+                },
+            ],
+            totals: Totals {
+                functions: complete,
+                instantiations: Metric {
+                    count: 3,
+                    covered: 2,
+                },
+                lines: complete,
+                regions: complete,
+            },
+        };
+
+        assert_eq!(
+            instantiation_diagnostics(&data).unwrap(),
+            InstantiationDiagnostics {
+                entry_count: 3,
+                executed_entries: 2,
+                definition_groups: 2,
+                covered_definition_groups: 2,
+                asymmetric_definition_groups: 1,
+                file_gaps: vec![FileInstantiationGap {
+                    filename: "src/lib.rs".to_owned(),
+                    uncovered: 1,
+                    count: 3,
+                }],
+            }
         );
     }
 }

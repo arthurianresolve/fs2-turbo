@@ -8,7 +8,43 @@ use windows_sys::Win32::Foundation::{
 
 use crate::windows::overlapped::PrivateOverlapped;
 
-use super::{allocate_sparse_space, allocate_with_attributes_result, with_device_control_event};
+use super::{
+    DeviceControlResult, allocate_sparse_space, allocate_with_attributes_result,
+    with_device_control_event,
+};
+
+#[derive(Clone, Copy)]
+enum Submission {
+    Success(u32),
+    Failure(u32, u32),
+}
+
+fn exercise_device_control_event(
+    event: std::io::Result<PrivateOverlapped>,
+    submission: Submission,
+) -> (DeviceControlResult, usize) {
+    let calls = Cell::new(0);
+    let result = with_device_control_event(event, |overlapped| {
+        calls.set(calls.get() + 1);
+        let tagged = overlapped.state().hEvent as usize;
+        assert_eq!(tagged & 1, 1);
+        let handle = (tagged & !1) as HANDLE;
+        let mut flags = 0;
+        let valid = unsafe {
+            // SAFETY: the owning event outlives this callback and flags is writable.
+            GetHandleInformation(handle, &mut flags)
+        };
+        assert_ne!(valid, 0);
+
+        match submission {
+            Submission::Success(returned) => Ok(returned),
+            Submission::Failure(code, returned) => {
+                Err((Error::from_raw_os_error(code as i32), returned))
+            }
+        }
+    });
+    (result, calls.get())
+}
 
 #[test]
 fn allocation_propagates_attribute_snapshot_failure() {
@@ -57,20 +93,16 @@ fn event_initialization_failure_preserves_error_without_submitting() {
                 PrivateOverlapped::from_event(std::ptr::null_mut())
             },
         };
-        let submitted = Cell::new(0);
-        let result = with_device_control_event(event, |_| {
-            submitted.set(submitted.get() + 1);
-            Ok(99)
-        });
+        let (result, submitted) = exercise_device_control_event(event, Submission::Success(99));
 
         if let Some(code) = code {
             let (error, returned) = result.unwrap_err();
             assert_eq!(error.raw_os_error(), Some(code as i32));
             assert_eq!(returned, 0);
-            assert_eq!(submitted.get(), 0);
+            assert_eq!(submitted, 0);
         } else {
             assert_eq!(result.unwrap(), 99);
-            assert_eq!(submitted.get(), 1);
+            assert_eq!(submitted, 1);
         }
     }
 }
@@ -79,27 +111,14 @@ fn event_initialization_failure_preserves_error_without_submitting() {
 fn event_remains_valid_during_submission_and_preserves_its_result() {
     for success in [true, false] {
         let event = PrivateOverlapped::new().unwrap();
-        let calls = Cell::new(0);
-        let result = with_device_control_event(Ok(event), |overlapped| {
-            calls.set(calls.get() + 1);
-            let tagged = overlapped.state().hEvent as usize;
-            assert_eq!(tagged & 1, 1);
-            let handle = (tagged & !1) as HANDLE;
-            let mut flags = 0;
-            let valid = unsafe {
-                // SAFETY: the owning event outlives this callback and flags is writable.
-                GetHandleInformation(handle, &mut flags)
-            };
-            assert_ne!(valid, 0);
+        let submission = if success {
+            Submission::Success(19)
+        } else {
+            Submission::Failure(ERROR_ACCESS_DENIED, 23)
+        };
+        let (result, calls) = exercise_device_control_event(Ok(event), submission);
 
-            if success {
-                Ok(19)
-            } else {
-                Err((Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32), 23))
-            }
-        });
-
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls, 1);
         if success {
             assert_eq!(result.unwrap(), 19);
         } else {

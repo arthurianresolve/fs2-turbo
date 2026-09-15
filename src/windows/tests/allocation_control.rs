@@ -19,10 +19,10 @@ use windows_sys::Win32::System::Ioctl::{
 
 use crate::AllocationState;
 use crate::windows::allocation::{
-    allocate, allocate_space, allocate_with_attributes, allocated_range_result, allocation_state,
-    complete_device_control, device_control_result, extend_file_length_with,
-    file_attributes_result, requested_range_is_allocated, reserve_sparse_range_with,
-    sparse_clear_result, wait_for_device_control,
+    DeviceControlResult, allocate, allocate_space, allocate_with_attributes,
+    allocated_range_result, allocation_state, complete_device_control, device_control_result,
+    extend_file_length_with, file_attributes_result, requested_range_is_allocated,
+    reserve_sparse_range_with, sparse_clear_result, wait_for_device_control,
 };
 use crate::windows::overlapped::PrivateOverlapped;
 
@@ -35,6 +35,66 @@ fn state() -> AllocationState {
 
 fn denied() -> Error {
     Error::from_raw_os_error(ERROR_ACCESS_DENIED as i32)
+}
+
+struct SparseScenario {
+    query_results: [bool; 2],
+    next_query: usize,
+    failing_step: Option<usize>,
+    calls: Vec<usize>,
+}
+
+fn sparse_step(scenario: &RefCell<SparseScenario>, step: usize) -> std::io::Result<()> {
+    let mut scenario = scenario.borrow_mut();
+    scenario.calls.push(step);
+    if scenario.failing_step == Some(step) {
+        Err(denied())
+    } else {
+        Ok(())
+    }
+}
+
+fn run_sparse_scenario(
+    first: bool,
+    last: bool,
+    failing_step: Option<usize>,
+) -> (std::io::Result<()>, Vec<usize>) {
+    let scenario = RefCell::new(SparseScenario {
+        query_results: [first, last],
+        next_query: 0,
+        failing_step,
+        calls: Vec::new(),
+    });
+    let result = reserve_sparse_range_with(
+        || {
+            let mut scenario = scenario.borrow_mut();
+            let step = if scenario.next_query == 0 { 0 } else { 3 };
+            let result = scenario.query_results[scenario.next_query];
+            scenario.next_query += 1;
+            scenario.calls.push(step);
+            if scenario.failing_step == Some(step) {
+                Err(denied())
+            } else {
+                Ok(result)
+            }
+        },
+        || sparse_step(&scenario, 1),
+        || sparse_step(&scenario, 2),
+    );
+    (result, scenario.into_inner().calls)
+}
+
+fn run_completion_scenario(
+    submitted: DeviceControlResult,
+    completion: DeviceControlResult,
+) -> (DeviceControlResult, usize) {
+    let calls = Cell::new(0);
+    let result = complete_device_control(submitted, |returned| {
+        assert_eq!(returned, 11);
+        calls.set(calls.get() + 1);
+        completion
+    });
+    (result, calls.get())
 }
 
 #[test]
@@ -138,27 +198,12 @@ fn existing_reservation_extends_the_logical_length() {
 #[test]
 fn sparse_reservation_validates_before_and_after_restoring_the_attribute() {
     for (first, last, expected_calls) in [
-        (true, true, vec!["query"]),
-        (false, true, vec!["query", "clear", "restore", "query"]),
-        (false, false, vec!["query", "clear", "restore", "query"]),
+        (true, true, vec![0]),
+        (false, true, vec![0, 1, 2, 3]),
+        (false, false, vec![0, 1, 2, 3]),
     ] {
-        let calls = RefCell::new(Vec::new());
-        let mut queries = [first, last].into_iter();
-        let result = reserve_sparse_range_with(
-            || {
-                calls.borrow_mut().push("query");
-                Ok(queries.next().unwrap())
-            },
-            || {
-                calls.borrow_mut().push("clear");
-                Ok(())
-            },
-            || {
-                calls.borrow_mut().push("restore");
-                Ok(())
-            },
-        );
-        assert_eq!(calls.into_inner(), expected_calls);
+        let (result, calls) = run_sparse_scenario(first, last, None);
+        assert_eq!(calls, expected_calls);
         if first || last {
             result.unwrap();
         } else {
@@ -170,41 +215,12 @@ fn sparse_reservation_validates_before_and_after_restoring_the_attribute() {
 #[test]
 fn sparse_failures_stop_the_remaining_operations() {
     for failing_step in 0..4 {
-        let calls = RefCell::new(Vec::new());
-        let mut query_number = 0;
-        let result = reserve_sparse_range_with(
-            || {
-                let step = if query_number == 0 { 0 } else { 3 };
-                query_number += 1;
-                calls.borrow_mut().push(step);
-                if step == failing_step {
-                    Err(denied())
-                } else {
-                    Ok(false)
-                }
-            },
-            || {
-                calls.borrow_mut().push(1);
-                if failing_step == 1 {
-                    Err(denied())
-                } else {
-                    Ok(())
-                }
-            },
-            || {
-                calls.borrow_mut().push(2);
-                if failing_step == 2 {
-                    Err(denied())
-                } else {
-                    Ok(())
-                }
-            },
-        );
+        let (result, calls) = run_sparse_scenario(false, false, Some(failing_step));
         assert_eq!(
             result.unwrap_err().raw_os_error(),
             Some(ERROR_ACCESS_DENIED as i32)
         );
-        assert_eq!(calls.into_inner(), (0..=failing_step).collect::<Vec<_>>());
+        assert_eq!(calls, (0..=failing_step).collect::<Vec<_>>());
     }
 }
 
@@ -238,26 +254,17 @@ fn device_control_captures_native_errors_and_waits_only_when_pending() {
 
     for submitted in [Ok(8), Err((denied(), 4))] {
         let expected = submitted.as_ref().copied().map_err(|(_, bytes)| *bytes);
-        let waited = Cell::new(false);
-        let result = complete_device_control(submitted, |_| {
-            waited.set(true);
-            Ok(99)
-        });
-        assert!(!waited.get());
+        let (result, calls) = run_completion_scenario(submitted, Ok(99));
+        assert_eq!(calls, 0);
         assert_eq!(result.map_err(|(_, bytes)| bytes), expected);
     }
     for completion in [Ok(32), Err((denied(), 7))] {
-        let calls = Cell::new(0);
         let expected = completion.as_ref().copied().map_err(|(_, bytes)| *bytes);
-        let result = complete_device_control(
+        let (result, calls) = run_completion_scenario(
             Err((Error::from_raw_os_error(ERROR_IO_PENDING as i32), 11)),
-            |returned| {
-                assert_eq!(returned, 11);
-                calls.set(calls.get() + 1);
-                completion
-            },
+            completion,
         );
-        assert_eq!(calls.get(), 1);
+        assert_eq!(calls, 1);
         assert_eq!(result.map_err(|(_, bytes)| bytes), expected);
     }
 }

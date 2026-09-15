@@ -105,6 +105,6 @@ mod tests {
             .status()
             .unwrap();
 
-        assert!(status.success(), "removed-current-directory worker failed");
+        assert_eq!(status.code(), Some(0));
     }
 }
