@@ -182,6 +182,22 @@ jobs:
         run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-${{ matrix.target }}.txt"
       - name: Enforce native coverage policy
         run: cargo xtask coverage --target "${{ matrix.target }}" --json "coverage-${{ matrix.target }}.json" --lcov "coverage-${{ matrix.target }}.lcov"
+      - name: Measure unit-only instantiation diagnostics
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-unit-${{ matrix.target }}
+        run: cargo llvm-cov --package fs2-turbo --lib --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-unit-${{ matrix.target }}.json" -- --test-threads=1
+      - name: Export unit-only coverage instantiations
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-unit-${{ matrix.target }}
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-unit-${{ matrix.target }}.txt"
+      - name: Measure integration-only instantiation diagnostics
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-integration-${{ matrix.target }}
+        run: cargo llvm-cov --package fs2-turbo --test integration --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-integration-${{ matrix.target }}.json" -- --test-threads=1
+      - name: Export integration-only coverage instantiations
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-integration-${{ matrix.target }}
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-integration-${{ matrix.target }}.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-${{ matrix.target }}
@@ -189,6 +205,10 @@ jobs:
             coverage-${{ matrix.target }}.lcov
             coverage-${{ matrix.target }}.json
             coverage-${{ matrix.target }}.txt
+            coverage-unit-${{ matrix.target }}.json
+            coverage-unit-${{ matrix.target }}.txt
+            coverage-integration-${{ matrix.target }}.json
+            coverage-integration-${{ matrix.target }}.txt
           if-no-files-found: error
 
   codecov:

@@ -1,6 +1,7 @@
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use fs2::{
     FileExt, FsStats, allocation_granularity, available_space, free_space, lock_contended_error,
@@ -8,18 +9,23 @@ use fs2::{
 };
 use tempfile::tempdir;
 
-// Compile the complete upstream method surface in a downstream crate. The
-// function is intentionally not called because several lock operations block
-// when performed sequentially on one file.
-#[allow(dead_code, deprecated)]
+const UPSTREAM_SURFACE_WORKER_RECEIPT: &str = "FS2_UPSTREAM_SURFACE_WORKER_RECEIPT";
+
+// Exercise the complete upstream method surface through a downstream generic.
+// Every acquired lock is released before the next operation.
+#[allow(deprecated)]
 fn upstream_method_syntax<T: FileExt>(file: &T) -> Result<()> {
-    let _ = file.duplicate()?;
+    let duplicate = file.duplicate()?;
+    drop(duplicate);
     let _ = file.allocated_size()?;
     file.allocate(0)?;
     file.lock_shared()?;
+    file.unlock()?;
     file.lock_exclusive()?;
-    let _ = file.try_lock_shared();
-    let _ = file.try_lock_exclusive();
+    file.unlock()?;
+    file.try_lock_shared()?;
+    file.unlock()?;
+    file.try_lock_exclusive()?;
     file.unlock()
 }
 
@@ -47,17 +53,33 @@ fn upstream_named_generic_function_items() {
 }
 
 #[test]
-#[allow(deprecated)]
 fn upstream_duplicate_and_allocation_surface() {
-    let tempdir = tempdir().unwrap();
-    let path = tempdir.path().join("fs2");
-    let mut original = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
+    let worker_dir = tempdir().unwrap();
+    let receipt = worker_dir.path().join("completed");
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "upstream_compat::upstream_duplicate_and_allocation_surface_worker",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env(UPSTREAM_SURFACE_WORKER_RECEIPT, &receipt)
+        .status()
         .unwrap();
+
+    assert!(status.success(), "upstream surface worker failed: {status}");
+    assert_eq!(std::fs::read(receipt).unwrap(), b"completed");
+}
+
+#[test]
+#[allow(deprecated)]
+fn upstream_duplicate_and_allocation_surface_worker() {
+    let Some(receipt) = std::env::var_os(UPSTREAM_SURFACE_WORKER_RECEIPT).map(PathBuf::from) else {
+        return;
+    };
+    let mut original = tempfile::tempfile().unwrap();
+
+    upstream_method_syntax(&original).unwrap();
 
     original.write_all(b"fs2").unwrap();
     let mut duplicate = original.duplicate().unwrap();
@@ -71,6 +93,8 @@ fn upstream_duplicate_and_allocation_surface() {
 
     original.allocate(0).unwrap();
     assert!(original.allocated_size().unwrap() >= original.metadata().unwrap().len());
+    drop(duplicate);
+    std::fs::write(receipt, b"completed").unwrap();
 }
 
 #[test]

@@ -189,6 +189,20 @@ impl FileExt for LegacyOnly {
 }
 
 #[test]
+#[allow(deprecated)]
+fn legacy_only_implements_the_non_lock_contract() {
+    let file = LegacyOnly {
+        calls: std::cell::RefCell::new(Vec::new()),
+        error: None,
+    };
+
+    drop(FileExt::duplicate(&file).unwrap());
+    assert_eq!(FileExt::allocated_size(&file).unwrap(), 0);
+    FileExt::allocate(&file, 0).unwrap();
+    assert!(file.calls.into_inner().is_empty());
+}
+
+#[test]
 fn default_aliases_forward_once_and_preserve_results() {
     for error in [None, Some(13)] {
         let file = LegacyOnly {
