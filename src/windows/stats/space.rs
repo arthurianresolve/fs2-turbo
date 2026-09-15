@@ -349,6 +349,17 @@ pub(crate) fn handle_space_from_info(
     let Some(actual_free) = checked_disk_space(granularity, actual_units) else {
         return DirectSpace::Unavailable;
     };
+
+    project_handle_space(granularity, caller_units, actual_free, kind)
+}
+
+#[inline]
+fn project_handle_space(
+    granularity: u64,
+    caller_units: u64,
+    actual_free: u64,
+    kind: SpaceKind,
+) -> DirectSpace {
     let Some(caller_available) = checked_disk_space(granularity, caller_units) else {
         return DirectSpace::Unavailable;
     };
@@ -400,3 +411,7 @@ pub(crate) fn root_space_with(
         ProviderOutcome::Unavailable(_) => legacy_space(root_path, kind),
     }
 }
+
+#[cfg(test)]
+#[path = "space_coverage_tests.rs"]
+mod coverage_tests;

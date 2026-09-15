@@ -55,16 +55,11 @@ pub(super) fn validate_unix_counters(
     if counters.free_blocks > counters.total_blocks {
         return Err(invalid_stats("filesystem free space exceeds total space"));
     }
-    if counters.available_blocks > counters.free_blocks {
-        return Err(invalid_stats(
-            "filesystem available space exceeds free space",
-        ));
-    }
-    if counters.available_blocks > counters.total_blocks {
-        return Err(invalid_stats(
-            "filesystem available space exceeds total space",
-        ));
-    }
+    validate_available_bounds(
+        counters.available_blocks,
+        counters.free_blocks,
+        counters.total_blocks,
+    )?;
     let total_space = allocation_granularity
         .checked_mul(counters.total_blocks)
         .ok_or_else(|| invalid_stats("filesystem space calculation overflowed"))?;
@@ -106,21 +101,31 @@ pub(super) fn validate_windows_counters(
     counters: FilesystemCounters,
 ) -> Result<ValidatedWindowsCounters> {
     validate_granularity(counters.allocation_granularity)?;
-    if counters.available_space > counters.free_space {
-        return Err(invalid_stats(
-            "filesystem available space exceeds free space",
-        ));
-    }
-    if counters.available_space > counters.total_space {
-        return Err(invalid_stats(
-            "filesystem available space exceeds total space",
-        ));
-    }
+    validate_available_bounds(
+        counters.available_space,
+        counters.free_space,
+        counters.total_space,
+    )?;
     if counters.source == WindowsCounterSource::Modern && counters.free_space > counters.total_space
     {
         return Err(invalid_stats("filesystem free space exceeds total space"));
     }
     Ok(ValidatedWindowsCounters(counters))
+}
+
+#[inline]
+fn validate_available_bounds(available: u64, free: u64, total: u64) -> Result<()> {
+    if available > free {
+        return Err(invalid_stats(
+            "filesystem available space exceeds free space",
+        ));
+    }
+    if available > total {
+        return Err(invalid_stats(
+            "filesystem available space exceeds total space",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_granularity(allocation_granularity: u64) -> Result<u64> {
@@ -130,3 +135,7 @@ fn validate_granularity(allocation_granularity: u64) -> Result<u64> {
         Ok(allocation_granularity)
     }
 }
+
+#[cfg(test)]
+#[path = "validation_tests.rs"]
+mod tests;

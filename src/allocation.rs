@@ -4,6 +4,9 @@ use std::io::Result;
 use crate::sys;
 
 #[cfg(test)]
+mod coverage_tests;
+
+#[cfg(test)]
 mod tests;
 
 #[derive(Debug, Clone, Copy)]
@@ -42,7 +45,18 @@ fn allocate_with_state(file: &File, len: u64, state: Result<AllocationState>) ->
         sys::allocate_space(file, state, len)?;
     }
 
-    if !reservation_can_set_length && state.file_size < len {
+    finish_allocation(file, len, state.file_size, reservation_can_set_length)
+}
+
+#[inline]
+#[cfg(any(not(windows), test))]
+fn finish_allocation(
+    file: &File,
+    len: u64,
+    observed_size: u64,
+    reservation_can_set_length: bool,
+) -> Result<()> {
+    if !reservation_can_set_length && observed_size < len {
         extend_file_length_after_snapshot(file, len)?;
     }
 

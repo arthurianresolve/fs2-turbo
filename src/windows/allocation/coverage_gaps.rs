@@ -26,22 +26,34 @@ fn sparse_allocation_rejects_oversized_lengths_before_file_mutation() {
 
 #[test]
 fn event_initialization_failure_preserves_error_without_submitting() {
-    for code in [ERROR_NOT_ENOUGH_MEMORY, ERROR_ACCESS_DENIED] {
-        let event = unsafe {
-            // SAFETY: last-error state is thread-local, and null transfers no handle.
-            SetLastError(code);
-            PrivateOverlapped::from_event(std::ptr::null_mut())
+    for code in [
+        None,
+        Some(ERROR_NOT_ENOUGH_MEMORY),
+        Some(ERROR_ACCESS_DENIED),
+    ] {
+        let event = match code {
+            None => PrivateOverlapped::new(),
+            Some(code) => unsafe {
+                // SAFETY: last-error state is thread-local, and null transfers no handle.
+                SetLastError(code);
+                PrivateOverlapped::from_event(std::ptr::null_mut())
+            },
         };
-        let submitted = Cell::new(false);
+        let submitted = Cell::new(0);
         let result = with_device_control_event(event, |_| {
-            submitted.set(true);
+            submitted.set(submitted.get() + 1);
             Ok(99)
         });
 
-        let (error, returned) = result.unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(code as i32));
-        assert_eq!(returned, 0);
-        assert!(!submitted.get());
+        if let Some(code) = code {
+            let (error, returned) = result.unwrap_err();
+            assert_eq!(error.raw_os_error(), Some(code as i32));
+            assert_eq!(returned, 0);
+            assert_eq!(submitted.get(), 0);
+        } else {
+            assert_eq!(result.unwrap(), 99);
+            assert_eq!(submitted.get(), 1);
+        }
     }
 }
 

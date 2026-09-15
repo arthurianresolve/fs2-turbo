@@ -41,6 +41,7 @@ pub(crate) fn with_c_path<T>(path: &Path, query: impl FnOnce(&CStr) -> Result<T>
 
 #[cfg(test)]
 mod test {
+    use std::cell::Cell;
     use std::ffi::OsStr;
     use std::io::ErrorKind;
     use std::os::unix::ffi::OsStrExt;
@@ -70,15 +71,28 @@ mod test {
     #[test]
     fn rejects_nulls_on_both_path_conversion_branches() {
         for length in [SMALL_PATH_BUFFER_SIZE - 1, SMALL_PATH_BUFFER_SIZE] {
-            let mut bytes = vec![b'a'; length];
-            bytes[length / 2] = 0;
-            let path = Path::new(OsStr::from_bytes(&bytes));
+            for contains_null in [false, true] {
+                let mut bytes = vec![b'a'; length];
+                if contains_null {
+                    bytes[length / 2] = 0;
+                }
+                let path = Path::new(OsStr::from_bytes(&bytes));
+                let calls = Cell::new(0);
 
-            let error = with_c_path(path, |_| -> Result<(), std::io::Error> {
-                panic!("query called with an invalid path")
-            })
-            .unwrap_err();
-            assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                let result = with_c_path(path, |path| {
+                    calls.set(calls.get() + 1);
+                    assert_eq!(path.to_bytes(), bytes);
+                    Ok(())
+                });
+                if contains_null {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+                    assert_eq!(calls.get(), 0);
+                } else {
+                    result.unwrap();
+                    assert_eq!(calls.get(), 1);
+                }
+            }
         }
     }
 }
