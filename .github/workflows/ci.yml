@@ -176,10 +176,17 @@ jobs:
           tool: cargo-llvm-cov@0.8.7
           fallback: none
       - run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --remap-path-prefix --lcov --output-path "coverage-${{ matrix.target }}.lcov" -- --test-threads=1
+      - name: Export detailed coverage JSON
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-${{ matrix.target }}.json"
+      - name: Export coverage instantiations
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-${{ matrix.target }}.txt"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-${{ matrix.target }}
-          path: coverage-${{ matrix.target }}.lcov
+          path: |
+            coverage-${{ matrix.target }}.lcov
+            coverage-${{ matrix.target }}.json
+            coverage-${{ matrix.target }}.txt
           if-no-files-found: error
 
   codecov:

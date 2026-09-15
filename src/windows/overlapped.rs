@@ -16,6 +16,13 @@ impl PrivateOverlapped {
             // non-inheritable manual-reset event owned by the returned handle.
             CreateEventW(std::ptr::null(), 1, 0, std::ptr::null())
         };
+        // SAFETY: a non-null CreateEventW result transfers ownership of the event.
+        unsafe { Self::from_event(event) }
+    }
+
+    /// A non-null event must be valid and transfer exclusive ownership.
+    #[inline]
+    pub(crate) unsafe fn from_event(event: HANDLE) -> Result<Self> {
         if event.is_null() {
             return Err(Error::last_os_error());
         }

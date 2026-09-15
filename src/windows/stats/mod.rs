@@ -54,7 +54,7 @@ pub(crate) mod test_support {
     pub(crate) use super::space::{
         DirectSpace, direct_space, direct_space_result, exact_root_value, handle_space,
         handle_space_attributes_decision, handle_space_attributes_eligible, handle_space_from_info,
-        handle_space_query_result, is_volume_resolution_error, root_space_with, space,
-        space_after_exact_root, statvfs_root_with, with_owned_handle,
+        handle_space_query_result, handle_space_with, is_volume_resolution_error, root_space_with,
+        space, space_after_exact_root, statvfs_root_with, with_owned_handle,
     };
 }

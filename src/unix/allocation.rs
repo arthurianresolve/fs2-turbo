@@ -18,11 +18,22 @@ pub(crate) fn allocation_state(file: &File) -> Result<AllocationState> {
         // descriptor for the duration of this call.
         libc::fstat(file.as_raw_fd(), stat.as_mut_ptr())
     };
+    // SAFETY: a nonnegative fstat result initialized the complete native structure.
+    unsafe { allocation_state_result(result, stat) }
+}
+
+/// A nonnegative result requires a fully initialized native stat value.
+#[inline(always)]
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+unsafe fn allocation_state_result(
+    result: libc::c_int,
+    stat: MaybeUninit<libc::stat>,
+) -> Result<AllocationState> {
     if result < 0 {
         return Err(Error::last_os_error());
     }
 
-    // SAFETY: a successful `fstat` initialized the complete `stat` value.
+    // SAFETY: the caller guarantees initialization for a successful result.
     let stat = unsafe { stat.assume_init() };
     Ok(AllocationState {
         allocated_size: blocks_to_bytes(i64_to_u64(

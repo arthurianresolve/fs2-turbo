@@ -205,6 +205,16 @@ pub(crate) fn direct_space_result(
 }
 
 pub(crate) fn handle_space(path: &[u16], os_path: &OsStr, kind: SpaceKind) -> DirectSpace {
+    handle_space_with(path, os_path, kind, handle_space_handle)
+}
+
+#[inline]
+pub(crate) fn handle_space_with(
+    path: &[u16],
+    os_path: &OsStr,
+    kind: SpaceKind,
+    open: impl FnOnce(&OsStr) -> Option<std::fs::File>,
+) -> DirectSpace {
     if matches!(kind, SpaceKind::Total)
         || matches!(kind, SpaceKind::AllocationGranularity)
             && !allocation_handle_path_eligible(path, os_path)
@@ -220,7 +230,7 @@ pub(crate) fn handle_space(path: &[u16], os_path: &OsStr, kind: SpaceKind) -> Di
         return DirectSpace::Unavailable;
     }
 
-    let handle = match handle_space_handle(os_path) {
+    let handle = match open(os_path) {
         Some(handle) => handle,
         None => return DirectSpace::Unavailable,
     };

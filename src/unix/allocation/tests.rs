@@ -88,3 +88,34 @@ fn macos_allocate_space_covers_native_control_flow() {
     );
     std::mem::forget(invalid);
 }
+
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[test]
+fn native_stat_failure_does_not_read_uninitialized_output() {
+    // SAFETY: close(-1) cannot close an owned descriptor and sets errno to EBADF.
+    assert_eq!(unsafe { libc::close(-1) }, -1);
+    // SAFETY: the failure result does not require an initialized output value.
+    let error =
+        unsafe { super::allocation_state_result(-1, std::mem::MaybeUninit::uninit()) }.unwrap_err();
+    assert_eq!(error.raw_os_error(), Some(libc::EBADF));
+}
+
+#[cfg(all(target_os = "linux", target_pointer_width = "64"))]
+#[test]
+fn native_stat_validation_checks_both_signed_fields() {
+    for (blocks, length, expected) in [(1, 7, Some((512, 7))), (-1, 7, None), (1, -1, None)] {
+        // SAFETY: Linux stat contains integer fields and accepts all-zero storage.
+        let mut stat: libc::stat = unsafe { std::mem::zeroed() };
+        stat.st_blocks = blocks;
+        stat.st_size = length;
+        // SAFETY: every field was initialized before supplying a success result.
+        let result = unsafe { super::allocation_state_result(0, std::mem::MaybeUninit::new(stat)) };
+        match expected {
+            Some((allocated, size)) => {
+                let state = result.unwrap();
+                assert_eq!((state.allocated_size, state.file_size), (allocated, size));
+            }
+            None => assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidData),
+        }
+    }
+}
