@@ -19,7 +19,7 @@ use windows_sys::Win32::System::Ioctl::{
 
 use crate::AllocationState;
 use crate::windows::allocation::{
-    allocate, allocate_space, allocate_with_attributes, allocated_range_result,
+    allocate, allocate_space, allocate_with_attributes, allocated_range_result, allocation_state,
     complete_device_control, device_control_result, extend_file_length_with,
     file_attributes_result, requested_range_is_allocated, reserve_sparse_range_with,
     sparse_clear_result, wait_for_device_control,
@@ -53,24 +53,86 @@ fn unsuitable_attributes_are_rejected_before_file_mutation() {
 }
 
 #[test]
-fn invalid_attributes_do_not_query_allocation_state() {
-    for (result, attributes, expected) in [
-        (0, FILE_ATTRIBUTE_NORMAL, ErrorKind::PermissionDenied),
-        (1, 0, ErrorKind::InvalidData),
+fn attribute_queries_preserve_error_precedence_and_valid_snapshots() {
+    for (result, attributes, state_fails, expected_calls, expected_error) in [
+        (
+            0,
+            FILE_ATTRIBUTE_NORMAL,
+            true,
+            0,
+            Some(ErrorKind::PermissionDenied),
+        ),
+        (0, 0, true, 0, Some(ErrorKind::PermissionDenied)),
+        (1, 0, true, 0, Some(ErrorKind::InvalidData)),
+        (
+            1,
+            FILE_ATTRIBUTE_NORMAL,
+            true,
+            1,
+            Some(ErrorKind::PermissionDenied),
+        ),
+        (1, FILE_ATTRIBUTE_NORMAL, false, 1, None),
     ] {
-        let queried = Cell::new(false);
+        let calls = Cell::new(0);
         // SAFETY: the native error slot belongs to this test thread.
         unsafe { SetLastError(ERROR_ACCESS_DENIED) };
-        let error = file_attributes_result(result, attributes, || {
-            queried.set(true);
-            Ok(state())
-        })
-        .unwrap_err();
-        assert_eq!(error.kind(), expected);
-        assert!(!queried.get());
+        let result = file_attributes_result(result, attributes, || {
+            calls.set(calls.get() + 1);
+            if state_fails {
+                Err(denied())
+            } else {
+                Ok(AllocationState {
+                    allocated_size: 8192,
+                    file_size: 1234,
+                })
+            }
+        });
+        assert_eq!(calls.get(), expected_calls);
+        if let Some(expected) = expected_error {
+            let error = result.unwrap_err();
+            assert_eq!(error.kind(), expected);
+            if expected == ErrorKind::PermissionDenied {
+                assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+            }
+        } else {
+            let (actual_attributes, actual_state) = result.unwrap();
+            assert_eq!(actual_attributes, attributes);
+            assert_eq!(actual_state.allocated_size, 8192);
+            assert_eq!(actual_state.file_size, 1234);
+        }
     }
-    let error = file_attributes_result(1, FILE_ATTRIBUTE_NORMAL, || Err(denied())).unwrap_err();
-    assert_eq!(error.raw_os_error(), Some(ERROR_ACCESS_DENIED as i32));
+}
+
+#[test]
+fn existing_reservation_extends_the_logical_length() {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALLOCATION_INFO, FileAllocationInfo, SetFileInformationByHandle,
+    };
+
+    let file = tempfile::tempfile().unwrap();
+    file.set_len(1).unwrap();
+    let reservation = FILE_ALLOCATION_INFO {
+        AllocationSize: 8192,
+    };
+    // SAFETY: the file handle and correctly sized input remain valid for this call.
+    let result = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle(),
+            FileAllocationInfo,
+            std::ptr::from_ref(&reservation).cast(),
+            std::mem::size_of::<FILE_ALLOCATION_INFO>() as u32,
+        )
+    };
+    assert_ne!(result, 0, "{}", Error::last_os_error());
+    let before = allocation_state(&file).unwrap();
+    assert_eq!(before.file_size, 1);
+    assert!(before.allocated_size >= 4096);
+
+    allocate_with_attributes(&file, 4096, FILE_ATTRIBUTE_NORMAL, before).unwrap();
+
+    let after = allocation_state(&file).unwrap();
+    assert_eq!(after.file_size, 4096);
+    assert!(after.allocated_size >= 4096);
 }
 
 #[test]

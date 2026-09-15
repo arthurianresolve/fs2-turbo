@@ -1,7 +1,8 @@
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{Error, Read, Seek, SeekFrom, Write};
 
-use super::finish_allocation;
+use super::{AllocationState, allocate_with_state};
+use super::{extend_file_length_after_snapshot_with, finish_allocation};
 
 #[test]
 fn completion_extends_length_and_preserves_existing_contents() {
@@ -47,4 +48,24 @@ fn completion_propagates_length_extension_failure() {
 
     assert!(finish_allocation(&read_only, 1, 0, false).is_err());
     assert_eq!(read_only.metadata().unwrap().len(), 0);
+}
+
+#[test]
+fn completion_propagates_snapshot_failure() {
+    let file = tempfile::tempfile().unwrap();
+    let error = Error::other("file length snapshot failed");
+
+    assert!(extend_file_length_after_snapshot_with(&file, 1, Err(error)).is_err());
+}
+
+#[test]
+fn shared_allocation_propagates_platform_reservation_failure() {
+    let temporary = tempfile::NamedTempFile::new().unwrap();
+    let read_only = File::open(temporary.path()).unwrap();
+    let state = AllocationState {
+        allocated_size: 0,
+        file_size: 0,
+    };
+
+    assert!(allocate_with_state(&read_only, 1, Ok(state)).is_err());
 }

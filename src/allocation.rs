@@ -71,7 +71,21 @@ fn reservation_needed(state: AllocationState, len: u64, always_reserve_range: bo
 
 #[cfg(any(not(windows), test))]
 fn extend_file_length_after_snapshot(file: &File, len: u64) -> Result<()> {
-    if file.metadata()?.len() < len {
+    extend_file_length_after_snapshot_with(
+        file,
+        len,
+        file.metadata().map(|metadata| metadata.len()),
+    )
+}
+
+#[inline]
+#[cfg(any(not(windows), test))]
+fn extend_file_length_after_snapshot_with(
+    file: &File,
+    len: u64,
+    current_len: Result<u64>,
+) -> Result<()> {
+    if current_len? < len {
         // FileExt::allocate requires exclusive ownership of logical-length
         // changes because set_len is exact, not an atomic max-length operation.
         file.set_len(len)

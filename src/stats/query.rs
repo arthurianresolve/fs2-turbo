@@ -72,3 +72,39 @@ fn absolute_path(path: &Path) -> Result<Cow<'_, Path>> {
         std::path::absolute(path).map(Cow::Owned)
     }
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::process::Command;
+
+    const REMOVED_CWD_WORKER: &str = "FS2_REMOVED_CWD_COVERAGE_WORKER";
+
+    #[test]
+    fn relative_path_reports_removed_current_directory() {
+        if std::env::var_os(REMOVED_CWD_WORKER).is_some() {
+            let original_directory = std::env::current_dir().unwrap();
+            let directory = tempfile::tempdir().unwrap();
+            std::env::set_current_dir(directory.path()).unwrap();
+            std::fs::remove_dir(directory.path()).unwrap();
+
+            let result = super::FsStatsQuery::new(".");
+
+            std::env::set_current_dir(original_directory).unwrap();
+            assert!(result.is_err());
+            return;
+        }
+
+        let module = module_path!().split_once("::").unwrap().1;
+        let status = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg(format!(
+                "{module}::relative_path_reports_removed_current_directory"
+            ))
+            .arg("--nocapture")
+            .env(REMOVED_CWD_WORKER, "1")
+            .status()
+            .unwrap();
+
+        assert!(status.success(), "removed-current-directory worker failed");
+    }
+}

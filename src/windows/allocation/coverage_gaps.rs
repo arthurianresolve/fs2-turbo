@@ -8,7 +8,25 @@ use windows_sys::Win32::Foundation::{
 
 use crate::windows::overlapped::PrivateOverlapped;
 
-use super::{allocate_sparse_space, with_device_control_event};
+use super::{allocate_sparse_space, allocate_with_attributes_result, with_device_control_event};
+
+#[test]
+fn allocation_propagates_attribute_snapshot_failure() {
+    let file = tempfile::tempfile().unwrap();
+    let error = Error::other("file attribute snapshot failed");
+
+    assert!(allocate_with_attributes_result(&file, 1, Err(error)).is_err());
+}
+
+#[test]
+fn sparse_allocation_propagates_length_extension_failure() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("read-only-sparse-allocation");
+    File::create(&path).unwrap();
+    let read_only = File::open(path).unwrap();
+
+    assert!(allocate_sparse_space(&read_only, 1).is_err());
+}
 
 #[test]
 fn sparse_allocation_rejects_oversized_lengths_before_file_mutation() {

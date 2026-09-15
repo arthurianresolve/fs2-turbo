@@ -1,4 +1,6 @@
 use std::fs::File;
+#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+use std::fs::Metadata;
 use std::io::{Error, ErrorKind, Result};
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]
 use std::mem::MaybeUninit;
@@ -35,22 +37,33 @@ unsafe fn allocation_state_result(
 
     // SAFETY: the caller guarantees initialization for a successful result.
     let stat = unsafe { stat.assume_init() };
-    Ok(AllocationState {
-        allocated_size: blocks_to_bytes(i64_to_u64(
-            stat.st_blocks,
-            "filesystem returned a negative allocated block count",
-        )?)?,
-        file_size: i64_to_u64(stat.st_size, "filesystem returned a negative file size")?,
-    })
+    let blocks = i64_to_u64(
+        stat.st_blocks,
+        "filesystem returned a negative allocated block count",
+    )?;
+    let file_size = i64_to_u64(stat.st_size, "filesystem returned a negative file size")?;
+    allocation_state_from_blocks(blocks, file_size)
 }
 
 #[inline(always)]
 #[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
 pub(crate) fn allocation_state(file: &File) -> Result<AllocationState> {
-    let metadata = file.metadata()?;
+    allocation_state_from_metadata(file.metadata())
+}
+
+#[inline(always)]
+#[cfg(not(all(target_os = "linux", target_pointer_width = "64")))]
+fn allocation_state_from_metadata(metadata: Result<Metadata>) -> Result<AllocationState> {
+    let metadata = metadata?;
+    allocation_state_from_blocks(metadata.blocks(), metadata.len())
+}
+
+#[inline(always)]
+fn allocation_state_from_blocks(blocks: u64, file_size: u64) -> Result<AllocationState> {
+    let allocated_size = blocks_to_bytes(blocks)?;
     Ok(AllocationState {
-        allocated_size: blocks_to_bytes(metadata.blocks())?,
-        file_size: metadata.len(),
+        allocated_size,
+        file_size,
     })
 }
 

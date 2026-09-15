@@ -111,19 +111,13 @@ cfg_if! {
             #[cfg(test)]
             pub(crate) fn allocate_space_with<F>(
                 file: &File,
+                state: AllocationState,
                 len: u64,
                 preallocate: &mut F,
             ) -> Result<()>
             where
                 F: FnMut(&File, &mut libc::fstore_t) -> libc::c_int,
             {
-                use std::os::unix::fs::MetadataExt;
-
-                let metadata = file.metadata()?;
-                let state = AllocationState {
-                    allocated_size: super::super::blocks_to_bytes(metadata.blocks())?,
-                    file_size: metadata.len(),
-                };
                 allocate_space_with_state(state, len, |fstore| preallocate(file, fstore))
             }
 

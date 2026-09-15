@@ -73,17 +73,47 @@ fn evaluates_drive_root_components_independently() {
 
 #[test]
 fn prepares_short_and_long_wide_paths() {
-    for mut encoded in [
-        vec![u16::from(b'x'); VOLUME_PATH_CAPACITY - 2],
-        vec![u16::from(b'x'); VOLUME_PATH_CAPACITY - 1],
+    for length in [
+        0,
+        1,
+        VOLUME_PATH_CAPACITY - 1,
+        VOLUME_PATH_CAPACITY,
+        VOLUME_PATH_CAPACITY + 1,
+        4096,
     ] {
-        encoded.push(0xd800);
-        let length = encoded.len();
-        let path = PathBuf::from(OsString::from_wide(&encoded));
-        let prepared = with_wide_path(&path, |path| Ok(path.to_vec())).unwrap();
-
-        assert_eq!(&prepared[..length], encoded);
-        assert_eq!(prepared[length], 0);
+        for null_index in [
+            None,
+            Some(0),
+            Some(VOLUME_PATH_CAPACITY - 1),
+            Some(VOLUME_PATH_CAPACITY),
+            Some(VOLUME_PATH_CAPACITY + 1),
+        ] {
+            if null_index.is_some_and(|index| index >= length) {
+                continue;
+            }
+            let mut encoded = vec![u16::from(b'x'); length];
+            if let Some(last) = encoded.last_mut() {
+                *last = 0xd800;
+            }
+            if let Some(index) = null_index {
+                encoded[index] = 0;
+            }
+            let path = PathBuf::from(OsString::from_wide(&encoded));
+            let calls = Cell::new(0);
+            // One call site combines successful and rejected paths in one LLVM instance.
+            let result = with_wide_path(&path, |path| {
+                calls.set(calls.get() + 1);
+                Ok(path.to_vec())
+            });
+            if null_index.is_some() {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+                assert_eq!(calls.get(), 0);
+            } else {
+                encoded.push(0);
+                assert_eq!(result.unwrap(), encoded);
+                assert_eq!(calls.get(), 1);
+            }
+        }
     }
 }
 

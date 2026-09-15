@@ -10,7 +10,7 @@ permissions:
 
 concurrency:
   group: temporary-macos-coverage-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -54,16 +54,23 @@ jobs:
           uname -a > target/macos-coverage-evidence/native-host.txt
           df -k "$RUNNER_TEMP" > target/macos-coverage-evidence/disk-headroom.txt
 
-      - name: Install exact compilers and coverage tooling
+      - name: Install exact compilers
         run: |
           set -euo pipefail
           unset RUSTUP_DIST_SERVER RUSTUP_UPDATE_ROOT
-          rustup toolchain install 1.88.0 --profile minimal
+          rustup toolchain install 1.88.0 --profile minimal --component llvm-tools-preview
           rustup toolchain install 1.98.1 --profile minimal --component clippy,rustfmt,llvm-tools-preview
-          cargo +1.98.1 install cargo-llvm-cov --version 0.8.7 --locked
           rustc +1.88.0 -vV > target/macos-coverage-evidence/rustc-1.88.0.txt
           rustc +1.98.1 -vV > target/macos-coverage-evidence/rustc-1.98.1.txt
-          cargo +1.98.1 llvm-cov --locked --version
+
+      - name: Install the pinned prebuilt coverage tool
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+
+      - name: Record coverage tool identity
+        run: cargo +1.98.1 llvm-cov --locked --version
 
       - name: Test exact MSRV
         run: |
@@ -97,20 +104,32 @@ jobs:
           set -euo pipefail
           cargo +1.98.1 package --package fs2-turbo --locked --offline
 
-      - name: Measure native coverage
+      - name: Measure exact MSRV diagnostic coverage
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/macos-coverage-instrumented-1.88.0
         run: |
           set -euo pipefail
-          cargo +1.98.1 llvm-cov --package fs2-turbo --lib --tests --target aarch64-apple-darwin --locked --offline --remap-path-prefix --lcov --output-path target/macos-coverage-evidence/coverage-maximum-aarch64-apple-darwin.lcov -- --test-threads=1
+          cargo +1.88.0 llvm-cov --package fs2-turbo --lib --tests --target aarch64-apple-darwin --locked --offline --remap-path-prefix --lcov --output-path target/macos-coverage-evidence/coverage-1.88.0-aarch64-apple-darwin.lcov -- --test-threads=1
+          cargo +1.88.0 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --json --output-path target/macos-coverage-evidence/coverage-1.88.0-aarch64-apple-darwin.json
+          cargo +1.88.0 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --text --show-instantiations --output-path target/macos-coverage-evidence/coverage-1.88.0-aarch64-apple-darwin.txt
 
-      - name: Export detailed coverage JSON
+      - name: Measure primary Rust coverage
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/macos-coverage-instrumented-1.98.1
         run: |
           set -euo pipefail
-          cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --json --output-path target/macos-coverage-evidence/coverage-maximum-aarch64-apple-darwin.json
+          cargo +1.98.1 llvm-cov --package fs2-turbo --lib --tests --target aarch64-apple-darwin --locked --offline --remap-path-prefix --lcov --output-path target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.lcov -- --test-threads=1
+          cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --json --output-path target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.json
+          cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --text --show-instantiations --output-path target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.txt
 
-      - name: Export native instantiation details
+      - name: Enforce primary coverage policy
+        run: cargo +1.98.1 xtask coverage --target aarch64-apple-darwin --json target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.json --lcov target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.lcov
+
+      - name: Confirm measurements did not change tracked source
         run: |
           set -euo pipefail
-          cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --text --show-instantiations --output-path target/macos-coverage-evidence/coverage-maximum-aarch64-apple-darwin.txt
+          git diff --exit-code
+          shasum -a 256 -c target/macos-coverage-evidence/tracked-files.sha256
 
       - name: Retain evidence and failure diagnostics
         if: always()

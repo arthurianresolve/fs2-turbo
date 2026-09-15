@@ -33,19 +33,54 @@ fn narrow_direct_results_do_not_claim_other_counter_domains() {
 }
 
 #[test]
-fn handle_open_failure_is_a_fallback_not_a_fabricated_counter() {
+fn handle_queries_and_open_failures_preserve_fallback_boundaries() {
     let temporary = tempdir().unwrap();
     let path = temporary.path().join("handle-fallback");
     fs::File::create(&path).unwrap();
-    let encoded = wide_path(&path).unwrap();
-    let calls = Cell::new(0);
-    let result = handle_space_with(&encoded, path.as_os_str(), SpaceKind::Free, |requested| {
-        assert_eq!(requested, path.as_os_str());
-        calls.set(calls.get() + 1);
-        None
-    });
-    assert_eq!(calls.get(), 1);
-    assert_eq!(result, DirectSpace::Unavailable);
+    let missing = temporary.path().join("missing");
+    for (path, kind, open_fails, expected_calls, expected_hit) in [
+        (path.as_path(), SpaceKind::Total, false, 0, false),
+        (
+            Path::new("."),
+            SpaceKind::AllocationGranularity,
+            false,
+            0,
+            false,
+        ),
+        (missing.as_path(), SpaceKind::Free, false, 0, false),
+        (temporary.path(), SpaceKind::Free, false, 0, false),
+        (path.as_path(), SpaceKind::Free, true, 1, false),
+        (path.as_path(), SpaceKind::Free, false, 1, true),
+        (path.as_path(), SpaceKind::Available, false, 1, true),
+        (
+            path.as_path(),
+            SpaceKind::AllocationGranularity,
+            false,
+            1,
+            true,
+        ),
+    ] {
+        let encoded = wide_path(path).unwrap();
+        let calls = Cell::new(0);
+        let result = handle_space_with(&encoded, path.as_os_str(), kind, |requested| {
+            assert_eq!(requested, path.as_os_str());
+            calls.set(calls.get() + 1);
+            if open_fails {
+                None
+            } else {
+                Some(fs::File::open(requested).unwrap())
+            }
+        });
+        assert_eq!(calls.get(), expected_calls, "{kind:?}");
+        if expected_hit {
+            assert!(
+                matches!(result, DirectSpace::Hit(_)),
+                "{kind:?}: {result:?}"
+            );
+        } else {
+            assert_eq!(result, DirectSpace::Unavailable, "{kind:?}");
+        }
+    }
 }
 
 #[test]

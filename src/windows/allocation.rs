@@ -75,7 +75,16 @@ pub(crate) fn allocate(file: &File, len: u64) -> Result<()> {
         return Ok(());
     }
 
-    let (attributes, state) = file_attributes_and_state(file)?;
+    allocate_with_attributes_result(file, len, file_attributes_and_state(file))
+}
+
+#[inline(always)]
+fn allocate_with_attributes_result(
+    file: &File,
+    len: u64,
+    attributes_and_state: Result<(u32, AllocationState)>,
+) -> Result<()> {
+    let (attributes, state) = attributes_and_state?;
     allocate_with_attributes(file, len, attributes, state)
 }
 
