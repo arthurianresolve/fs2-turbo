@@ -167,3 +167,46 @@ fn rejects_invalid_legacy_available_space() {
     let error = FsStats::from_counters(legacy_counters(4096, 10_000, 20_000, 30_000)).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::InvalidData);
 }
+
+#[test]
+fn prepares_relative_queries_without_changing_the_working_directory() {
+    let query = FsStatsQuery::new(".").unwrap();
+    let snapshot = query.snapshot().unwrap();
+    assert!(snapshot.allocation_granularity() > 0);
+    assert!(snapshot.total_space() > 0);
+}
+
+#[test]
+fn prepared_queries_reject_embedded_nulls() {
+    let error = FsStatsQuery::new("relative\0path").unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+}
+
+#[cfg(unix)]
+#[test]
+fn rejects_free_blocks_above_total_even_when_available_is_valid() {
+    let error = FsStats::from_counters(counters(4096, 11, 1, 10)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert_eq!(
+        error.to_string(),
+        "filesystem free space exceeds total space"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn validated_windows_scalars_preserve_counter_domains() {
+    use super::SpaceKind;
+
+    for counters in [
+        counters(4096, 50_000, 10_000, 60_000),
+        legacy_counters(4096, 50_000, 10_000, 40_000),
+    ] {
+        assert_eq!(counters.space(SpaceKind::Free).unwrap(), 50_000);
+        assert_eq!(counters.space(SpaceKind::Available).unwrap(), 10_000);
+        assert_eq!(
+            counters.space(SpaceKind::AllocationGranularity).unwrap(),
+            4096
+        );
+    }
+}

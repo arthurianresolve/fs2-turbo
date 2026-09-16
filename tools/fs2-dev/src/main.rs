@@ -1,4 +1,5 @@
 mod compatibility;
+mod coverage;
 mod matrix;
 mod process;
 
@@ -36,6 +37,52 @@ fn run() -> Result<()> {
                         .num_args(1),
                 ),
         )
+        .subcommand(
+            Command::new("coverage")
+                .about("Validate native LLVM coverage evidence")
+                .arg(
+                    Arg::new("target")
+                        .long("target")
+                        .value_name("TRIPLE")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("json")
+                        .long("json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("lcov")
+                        .long("lcov")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("unit-json")
+                        .long("unit-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("integration-json")
+                        .long("integration-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("diagnostics-json")
+                        .long("diagnostics-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                ),
+        )
         .subcommand(Command::new("compatibility").about("Validate the v0.4 API contract"))
         .get_matches();
 
@@ -46,6 +93,36 @@ fn run() -> Result<()> {
                 .map(PathBuf::from);
             matrix::run(repository_root(), output.as_deref())
         }
+        Some(("coverage", arguments)) => coverage::run(
+            arguments
+                .get_one::<String>("target")
+                .expect("required target is missing"),
+            Path::new(
+                arguments
+                    .get_one::<String>("json")
+                    .expect("required JSON path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("lcov")
+                    .expect("required LCOV path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("unit-json")
+                    .expect("required unit JSON path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("integration-json")
+                    .expect("required integration JSON path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("diagnostics-json")
+                    .expect("required diagnostics JSON path is missing"),
+            ),
+        ),
         Some(("compatibility", _)) => compatibility::run(repository_root()),
         _ => unreachable!("clap requires a known subcommand"),
     }

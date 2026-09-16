@@ -59,6 +59,7 @@ const UNAVAILABLE_ERROR_ENCODINGS: [(u32, i32); 3] = [
     (ERROR_NOT_SUPPORTED, 0x8007_0032_u32 as i32),
 ];
 
+mod edge_cases;
 mod handle;
 mod modern;
 mod path;

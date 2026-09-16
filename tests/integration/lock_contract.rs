@@ -103,7 +103,11 @@ fn cross_process_exclusive_lock_is_observed() {
     file.fs2_lock_exclusive().unwrap();
 
     let status = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", "cross_process_lock_probe", "--nocapture"])
+        .args([
+            "--exact",
+            "lock_contract::cross_process_lock_probe",
+            "--nocapture",
+        ])
         .env("FS2_LOCK_PROBE_PATH", &path)
         .status()
         .unwrap();
@@ -133,4 +137,116 @@ fn legacy_lock_methods_share_the_contract() {
     FileExt::unlock(&file1).unwrap();
     FileExt::lock_exclusive(&file2).unwrap();
     FileExt::unlock(&file2).unwrap();
+}
+
+struct LegacyOnly {
+    calls: std::cell::RefCell<Vec<&'static str>>,
+    error: Option<i32>,
+}
+
+impl LegacyOnly {
+    fn record(&self, method: &'static str) -> std::io::Result<()> {
+        self.calls.borrow_mut().push(method);
+        match self.error {
+            Some(code) => Err(std::io::Error::from_raw_os_error(code)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl FileExt for LegacyOnly {
+    fn duplicate(&self) -> std::io::Result<File> {
+        tempfile::tempfile()
+    }
+
+    fn allocated_size(&self) -> std::io::Result<u64> {
+        Ok(0)
+    }
+
+    fn allocate(&self, _len: u64) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn lock_shared(&self) -> std::io::Result<()> {
+        self.record("lock_shared")
+    }
+
+    fn lock_exclusive(&self) -> std::io::Result<()> {
+        self.record("lock_exclusive")
+    }
+
+    fn try_lock_shared(&self) -> std::io::Result<()> {
+        self.record("try_lock_shared")
+    }
+
+    fn try_lock_exclusive(&self) -> std::io::Result<()> {
+        self.record("try_lock_exclusive")
+    }
+
+    fn unlock(&self) -> std::io::Result<()> {
+        self.record("unlock")
+    }
+}
+
+#[test]
+#[allow(deprecated)]
+fn legacy_only_implements_the_non_lock_contract() {
+    let file = LegacyOnly {
+        calls: std::cell::RefCell::new(Vec::new()),
+        error: None,
+    };
+
+    drop(FileExt::duplicate(&file).unwrap());
+    assert_eq!(FileExt::allocated_size(&file).unwrap(), 0);
+    FileExt::allocate(&file, 0).unwrap();
+    assert!(file.calls.into_inner().is_empty());
+}
+
+#[test]
+fn default_aliases_forward_once_and_preserve_results() {
+    for error in [None, Some(13)] {
+        let file = LegacyOnly {
+            calls: std::cell::RefCell::new(Vec::new()),
+            error,
+        };
+        let results = [
+            file.fs2_lock_shared(),
+            file.fs2_lock_exclusive(),
+            file.fs2_try_lock_shared(),
+            file.fs2_try_lock_exclusive(),
+            file.fs2_unlock(),
+        ];
+
+        assert_eq!(
+            file.calls.into_inner(),
+            [
+                "lock_shared",
+                "lock_exclusive",
+                "try_lock_shared",
+                "try_lock_exclusive",
+                "unlock",
+            ]
+        );
+        for result in results {
+            match error {
+                Some(code) => assert_eq!(result.unwrap_err().raw_os_error(), Some(code)),
+                None => result.unwrap(),
+            }
+        }
+    }
+}
+
+#[test]
+fn every_legacy_lock_method_completes_on_an_uncontended_file() {
+    let temporary = tempfile::tempdir().unwrap();
+    let file = open_file(&temporary.path().join("legacy-success"));
+
+    FileExt::lock_shared(&file).unwrap();
+    FileExt::unlock(&file).unwrap();
+    FileExt::lock_exclusive(&file).unwrap();
+    FileExt::unlock(&file).unwrap();
+    FileExt::try_lock_shared(&file).unwrap();
+    FileExt::unlock(&file).unwrap();
+    FileExt::try_lock_exclusive(&file).unwrap();
+    FileExt::unlock(&file).unwrap();
 }
