@@ -3,7 +3,7 @@ name: Temporary macOS coverage validation
 on:
   push:
     branches:
-      - codex/coverage-macos-20260915-9a328249
+      - dev-coverage
 
 permissions:
   contents: read
@@ -24,7 +24,7 @@ env:
 
 jobs:
   native-macos:
-    if: github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/codex/coverage-macos-20260915-9a328249'
+    if: github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage'
     runs-on: macos-latest
     timeout-minutes: 30
     env:
