@@ -8,54 +8,136 @@ use crate::{Result, invalid_data};
 
 const LLVM_COVERAGE_EXPORT: &str = "llvm.coverage.json.export";
 
-// Reviewed integration-only residuals for Rust 1.98.1. These are private,
-// platform-specific error or fallback paths covered through unit seams. Any
-// source movement or changed residual requires an explicit policy review.
-const WINDOWS_INTEGRATION_RESIDUAL: &[&str] = &[
-    "src/stats.rs:20:1",
-    "src/stats/counters.rs:70:5",
-    "src/windows/allocation.rs:58:67",
-    "src/windows/allocation.rs:64:57",
-    "src/windows/allocation.rs:165:22",
-    "src/windows/allocation.rs:332:55",
-    "src/windows/allocation.rs:360:1",
-    "src/windows/allocation.rs:378:22",
-    "src/windows/overlapped.rs:43:5",
-    "src/windows/stats/legacy.rs:8:1",
-    "src/windows/stats/legacy.rs:12:1",
-    "src/windows/stats/legacy.rs:33:1",
-    "src/windows/stats/legacy.rs:36:12",
-    "src/windows/stats/legacy.rs:37:12",
-    "src/windows/stats/legacy.rs:41:1",
-    "src/windows/stats/legacy.rs:54:1",
-    "src/windows/stats/legacy.rs:73:1",
-    "src/windows/stats/legacy.rs:87:1",
-    "src/windows/stats/legacy.rs:109:1",
-    "src/windows/stats/legacy.rs:128:1",
-    "src/windows/stats/modern.rs:83:1",
-    "src/windows/stats/modern.rs:100:1",
-    "src/windows/stats/modern.rs:105:1",
-    "src/windows/stats/modern.rs:143:1",
-    "src/windows/stats/space.rs:128:1",
-    "src/windows/stats/space.rs:378:1",
-    "src/windows/stats/space.rs:388:1",
-];
+#[derive(Clone, Copy, Debug)]
+struct IntendedIntegrationDefinition {
+    api: &'static str,
+    source: &'static str,
+}
 
-const LINUX_INTEGRATION_RESIDUAL: &[&str] = &[
-    "src/allocation.rs:73:1",
-    "src/allocation.rs:77:40",
-    "src/allocation.rs:83:1",
-    "src/stats.rs:20:1",
-    "src/stats/validation.rs:65:24",
-    "src/unix/allocation.rs:85:22",
-    "src/unix/allocation.rs:90:1",
-    "src/unix/stats.rs:172:34",
-];
-
-const MACOS_INTEGRATION_RESIDUAL: &[&str] = &[
-    "src/stats.rs:20:1",
-    "src/stats/validation.rs:65:24",
-    "src/unix/allocation.rs:90:1",
+// These externally reachable definitions form the stable integration
+// contract. Compiler-created monomorphizations remain diagnostic because their
+// number and linkage names vary by toolchain even when this contract does not.
+const INTENDED_INTEGRATION_DEFINITIONS: &[IntendedIntegrationDefinition] = &[
+    IntendedIntegrationDefinition {
+        api: "FileExt::fs2_lock_shared",
+        source: "src/lib.rs:140:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt::fs2_lock_exclusive",
+        source: "src/lib.rs:147:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt::fs2_try_lock_shared",
+        source: "src/lib.rs:154:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt::fs2_try_lock_exclusive",
+        source: "src/lib.rs:161:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt::fs2_unlock",
+        source: "src/lib.rs:167:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::duplicate",
+        source: "src/lib.rs:193:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::allocated_size",
+        source: "src/lib.rs:197:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::allocate",
+        source: "src/lib.rs:201:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::fs2_lock_shared",
+        source: "src/lib.rs:205:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::fs2_lock_exclusive",
+        source: "src/lib.rs:209:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::fs2_try_lock_shared",
+        source: "src/lib.rs:213:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::fs2_try_lock_exclusive",
+        source: "src/lib.rs:217:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::fs2_unlock",
+        source: "src/lib.rs:221:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::lock_shared",
+        source: "src/lib.rs:225:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::lock_exclusive",
+        source: "src/lib.rs:229:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::try_lock_shared",
+        source: "src/lib.rs:233:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::try_lock_exclusive",
+        source: "src/lib.rs:237:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FileExt for File::unlock",
+        source: "src/lib.rs:241:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "lock_contended_error",
+        source: "src/lib.rs:248:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "statvfs",
+        source: "src/stats.rs:33:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "free_space",
+        source: "src/stats.rs:41:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "available_space",
+        source: "src/stats.rs:49:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "total_space",
+        source: "src/stats.rs:57:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "allocation_granularity",
+        source: "src/stats.rs:65:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStatsQuery::new",
+        source: "src/stats/query.rs:42:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStatsQuery::snapshot",
+        source: "src/stats/query.rs:63:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStats::free_space",
+        source: "src/stats/snapshot.rs:42:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStats::available_space",
+        source: "src/stats/snapshot.rs:48:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStats::total_space",
+        source: "src/stats/snapshot.rs:57:5",
+    },
+    IntendedIntegrationDefinition {
+        api: "FsStats::allocation_granularity",
+        source: "src/stats/snapshot.rs:67:5",
+    },
 ];
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
@@ -122,7 +204,7 @@ struct CoveragePolicy {
 
 #[derive(Clone, Copy, Debug)]
 struct IntegrationPolicy {
-    uncovered_definition_groups: &'static [&'static str],
+    intended_definitions: &'static [IntendedIntegrationDefinition],
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -162,6 +244,7 @@ struct DefinitionGroupState {
 struct CoverageDiagnosticsReport<'a> {
     schema_version: u32,
     target: &'a str,
+    intended_integration_definitions: Metric,
     profiles: Vec<ProfileDiagnosticsReport<'a>>,
 }
 
@@ -212,16 +295,14 @@ pub(crate) fn run(
     let combined_groups = definition_groups(data)?;
     let unit_groups = definition_groups(unit_data)?;
     let integration_groups = definition_groups(integration_data)?;
-    validate_unit_instantiations(target, unit_data, &unit_diagnostics)?;
-    validate_integration_instantiations(
-        target,
-        &unit_groups,
-        &integration_groups,
-        &integration_diagnostics,
-    )?;
+    validate_source_definition_completeness(target, "combined", &combined_diagnostics)?;
+    validate_source_definition_completeness(target, "unit", &unit_diagnostics)?;
+    let intended_integration_definitions =
+        validate_integration_instantiations(target, &unit_groups, &integration_groups)?;
     write_diagnostics_report(
         diagnostics_json_path,
         target,
+        intended_integration_definitions,
         [
             (
                 "combined",
@@ -260,6 +341,10 @@ pub(crate) fn run(
         "integration",
         integration_data,
         &integration_diagnostics,
+    );
+    println!(
+        "intended integration definitions for {target}: {}/{}",
+        intended_integration_definitions.covered, intended_integration_definitions.count
     );
     Ok(())
 }
@@ -341,7 +426,7 @@ fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnos
     let uncovered_definition_groups = groups
         .iter()
         .filter(|(_, state)| state.covered_entries == 0)
-        .map(|(key, _)| format!("{}:{}:{}", key.filename, key.line, key.column))
+        .map(|(key, _)| definition_id(key))
         .collect();
 
     Ok(InstantiationDiagnostics {
@@ -393,6 +478,9 @@ fn definition_key(function: &FunctionCoverage) -> Result<Option<DefinitionKey>> 
     let Some(filename) = function.filenames.first() else {
         return Ok(None);
     };
+    let Some(filename) = normalize_source_path(filename) else {
+        return Ok(None);
+    };
     let Some(start) = function
         .regions
         .iter()
@@ -429,41 +517,31 @@ fn definition_key(function: &FunctionCoverage) -> Result<Option<DefinitionKey>> 
         })
         .collect::<Result<Vec<_>>>()?;
     Ok(Some(DefinitionKey {
-        filename: normalize_source_path(filename),
+        filename,
         line,
         column,
         regions,
     }))
 }
 
-fn normalize_source_path(filename: &str) -> String {
+fn normalize_source_path(filename: &str) -> Option<String> {
     let normalized = filename.replace('\\', "/");
-    normalized
-        .rfind("/src/")
-        .map_or(normalized.clone(), |index| {
-            normalized[index + 1..].to_owned()
-        })
+    let relative = normalized.strip_prefix("./").unwrap_or(&normalized);
+    (relative.starts_with("src/") || relative.starts_with("tests/")).then(|| relative.to_owned())
 }
 
-fn validate_unit_instantiations(
+fn definition_id(key: &DefinitionKey) -> String {
+    format!("{}:{}:{}", key.filename, key.line, key.column)
+}
+
+fn validate_source_definition_completeness(
     target: &str,
-    data: &CoverageData,
+    profile: &str,
     diagnostics: &InstantiationDiagnostics,
 ) -> Result<()> {
-    require_complete(
-        target,
-        "unit LLVM instantiations",
-        metric_lines(data.totals.instantiations)?,
-    )?;
-    if diagnostics.executed_entries != diagnostics.entry_count {
-        return Err(invalid_data(format!(
-            "coverage regression for {target}: unit JSON entries are {}/{}",
-            diagnostics.executed_entries, diagnostics.entry_count
-        )));
-    }
     if diagnostics.covered_definition_groups != diagnostics.definition_groups {
         return Err(invalid_data(format!(
-            "coverage regression for {target}: unit source-definition groups are {}/{}",
+            "coverage regression for {target}: {profile} source-definition groups are {}/{}",
             diagnostics.covered_definition_groups, diagnostics.definition_groups
         )));
     }
@@ -474,30 +552,13 @@ fn validate_integration_instantiations(
     target: &str,
     unit_groups: &BTreeMap<DefinitionKey, DefinitionGroupState>,
     integration_groups: &BTreeMap<DefinitionKey, DefinitionGroupState>,
-    diagnostics: &InstantiationDiagnostics,
-) -> Result<()> {
+) -> Result<Metric> {
     let policy = integration_policy_for_target(target)?;
-    let actual = diagnostics
-        .uncovered_definition_groups
-        .iter()
-        .map(String::as_str)
-        .collect::<BTreeSet<_>>();
-    let expected = policy
-        .uncovered_definition_groups
-        .iter()
-        .copied()
-        .collect::<BTreeSet<_>>();
-    if actual != expected
-        || diagnostics.uncovered_definition_groups.len() != policy.uncovered_definition_groups.len()
-    {
-        let unexpected = actual.difference(&expected).copied().collect::<Vec<_>>();
-        let resolved = expected.difference(&actual).copied().collect::<Vec<_>>();
-        return Err(invalid_data(format!(
-            "coverage integration residual changed for {target}; unexpected [{}], resolved [{}]",
-            unexpected.join(", "),
-            resolved.join(", ")
-        )));
-    }
+    let intended = validate_intended_integration_definitions(
+        target,
+        policy.intended_definitions,
+        integration_groups,
+    )?;
 
     let unowned = integration_groups
         .iter()
@@ -507,7 +568,7 @@ fn validate_integration_instantiations(
                 .get(*key)
                 .is_none_or(|state| state.covered_entries == 0)
         })
-        .map(|(key, _)| format!("{}:{}:{}", key.filename, key.line, key.column))
+        .map(|(key, _)| definition_id(key))
         .collect::<Vec<_>>();
     if !unowned.is_empty() {
         return Err(invalid_data(format!(
@@ -515,7 +576,52 @@ fn validate_integration_instantiations(
             unowned.join(", ")
         )));
     }
-    Ok(())
+    Ok(intended)
+}
+
+fn validate_intended_integration_definitions(
+    target: &str,
+    intended: &[IntendedIntegrationDefinition],
+    integration_groups: &BTreeMap<DefinitionKey, DefinitionGroupState>,
+) -> Result<Metric> {
+    let mut api_names = BTreeSet::new();
+    let mut sources = BTreeSet::new();
+    let mut missing = Vec::new();
+    let mut uncovered = Vec::new();
+
+    for definition in intended {
+        if !api_names.insert(definition.api) || !sources.insert(definition.source) {
+            return Err(invalid_data(format!(
+                "duplicate intended integration definition for {target}: {} ({})",
+                definition.api, definition.source
+            )));
+        }
+        let matches = integration_groups
+            .iter()
+            .filter(|(key, _)| definition_id(key) == definition.source)
+            .map(|(_, state)| state)
+            .collect::<Vec<_>>();
+
+        if matches.is_empty() {
+            missing.push(format!("{} ({})", definition.api, definition.source));
+        } else if matches.iter().all(|state| state.covered_entries == 0) {
+            uncovered.push(format!("{} ({})", definition.api, definition.source));
+        }
+    }
+
+    if !missing.is_empty() || !uncovered.is_empty() {
+        return Err(invalid_data(format!(
+            "intended integration coverage regression for {target}; missing [{}], uncovered [{}]",
+            missing.join(", "),
+            uncovered.join(", ")
+        )));
+    }
+
+    let count = intended.len().try_into()?;
+    Ok(Metric {
+        count,
+        covered: count,
+    })
 }
 
 type ProfileEvidence<'a> = (
@@ -529,6 +635,7 @@ type ProfileEvidence<'a> = (
 fn write_diagnostics_report<const N: usize>(
     path: &Path,
     target: &str,
+    intended_integration_definitions: Metric,
     profiles: [ProfileEvidence<'_>; N],
 ) -> Result<()> {
     let profiles = profiles
@@ -581,8 +688,9 @@ fn write_diagnostics_report<const N: usize>(
         })
         .collect();
     let report = CoverageDiagnosticsReport {
-        schema_version: 1,
+        schema_version: 2,
         target,
+        intended_integration_definitions,
         profiles,
     };
     let mut encoded = serde_json::to_vec_pretty(&report)?;
@@ -696,15 +804,11 @@ fn policy_for_target(target: &str) -> Result<CoveragePolicy> {
 
 fn integration_policy_for_target(target: &str) -> Result<IntegrationPolicy> {
     let policy = match target {
-        "x86_64-pc-windows-msvc" => IntegrationPolicy {
-            uncovered_definition_groups: WINDOWS_INTEGRATION_RESIDUAL,
-        },
-        "x86_64-unknown-linux-gnu" => IntegrationPolicy {
-            uncovered_definition_groups: LINUX_INTEGRATION_RESIDUAL,
-        },
-        "aarch64-apple-darwin" => IntegrationPolicy {
-            uncovered_definition_groups: MACOS_INTEGRATION_RESIDUAL,
-        },
+        "x86_64-pc-windows-msvc" | "x86_64-unknown-linux-gnu" | "aarch64-apple-darwin" => {
+            IntegrationPolicy {
+                intended_definitions: INTENDED_INTEGRATION_DEFINITIONS,
+            }
+        }
         _ => {
             return Err(invalid_data(format!(
                 "no native integration coverage policy exists for target {target:?}"
@@ -813,6 +917,20 @@ mod tests {
     }
 
     #[test]
+    fn source_definition_groups_exclude_toolchain_sources() {
+        assert_eq!(
+            normalize_source_path(r"src\lib.rs"),
+            Some("src/lib.rs".to_owned())
+        );
+        assert_eq!(
+            normalize_source_path(
+                r"\rustc\6b00bc3880198600130e1cf62b8f8a93494488cc\library\core\src\panic.rs"
+            ),
+            None
+        );
+    }
+
+    #[test]
     fn rejects_coverage_regressions() {
         let policy = CoveragePolicy {
             minimum_unique_lines: 2,
@@ -915,6 +1033,84 @@ mod tests {
                     count: 3,
                 }],
             }
+        );
+    }
+
+    #[test]
+    fn intended_integration_definitions_ignore_compiler_instantiation_asymmetry() {
+        let key = DefinitionKey {
+            filename: "src/lib.rs".to_owned(),
+            line: 7,
+            column: 1,
+            regions: vec![(7, 1, 9, 2, 0)],
+        };
+        let alternate_region_shape = DefinitionKey {
+            filename: "src/lib.rs".to_owned(),
+            line: 7,
+            column: 1,
+            regions: vec![(7, 1, 10, 2, 0)],
+        };
+        let groups = BTreeMap::from([
+            (
+                key,
+                DefinitionGroupState {
+                    entries: 3,
+                    covered_entries: 1,
+                    symbols: BTreeSet::new(),
+                },
+            ),
+            (
+                alternate_region_shape,
+                DefinitionGroupState {
+                    entries: 1,
+                    covered_entries: 0,
+                    symbols: BTreeSet::new(),
+                },
+            ),
+        ]);
+        let intended = [IntendedIntegrationDefinition {
+            api: "public_api",
+            source: "src/lib.rs:7:1",
+        }];
+
+        assert_eq!(
+            validate_intended_integration_definitions("test-target", &intended, &groups)
+                .unwrap()
+                .covered,
+            1
+        );
+    }
+
+    #[test]
+    fn intended_integration_definitions_reject_missing_or_uncovered_entries() {
+        let key = DefinitionKey {
+            filename: "src/lib.rs".to_owned(),
+            line: 7,
+            column: 1,
+            regions: vec![(7, 1, 9, 2, 0)],
+        };
+        let groups = BTreeMap::from([(
+            key,
+            DefinitionGroupState {
+                entries: 1,
+                covered_entries: 0,
+                symbols: BTreeSet::new(),
+            },
+        )]);
+        let uncovered = [IntendedIntegrationDefinition {
+            api: "public_api",
+            source: "src/lib.rs:7:1",
+        }];
+        let missing = [IntendedIntegrationDefinition {
+            api: "other_public_api",
+            source: "src/lib.rs:11:1",
+        }];
+
+        assert!(
+            validate_intended_integration_definitions("test-target", &uncovered, &groups).is_err()
+        );
+        assert!(
+            validate_intended_integration_definitions("test-target", &missing, &groups).is_err()
         );
     }
 }
