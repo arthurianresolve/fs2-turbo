@@ -122,9 +122,6 @@ jobs:
           cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --json --output-path target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.json
           cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --text --show-instantiations --output-path target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.txt
 
-      - name: Enforce primary coverage policy
-        run: cargo +1.98.1 xtask coverage --target aarch64-apple-darwin --json target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.json --lcov target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.lcov
-
       - name: Measure primary unit-only instantiation diagnostics
         env:
           CARGO_LLVM_COV_TARGET_DIR: target/macos-coverage-unit-1.98.1
@@ -140,6 +137,16 @@ jobs:
           set -euo pipefail
           cargo +1.98.1 llvm-cov --package fs2-turbo --test integration --target aarch64-apple-darwin --locked --offline --remap-path-prefix --json --output-path target/macos-coverage-evidence/coverage-integration-1.98.1-aarch64-apple-darwin.json -- --test-threads=1
           cargo +1.98.1 llvm-cov report --package fs2-turbo --target aarch64-apple-darwin --locked --offline --remap-path-prefix --text --show-instantiations --output-path target/macos-coverage-evidence/coverage-integration-1.98.1-aarch64-apple-darwin.txt
+
+      - name: Enforce primary coverage policy
+        run: >-
+          cargo +1.98.1 xtask coverage
+          --target aarch64-apple-darwin
+          --json target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.json
+          --lcov target/macos-coverage-evidence/coverage-1.98.1-aarch64-apple-darwin.lcov
+          --unit-json target/macos-coverage-evidence/coverage-unit-1.98.1-aarch64-apple-darwin.json
+          --integration-json target/macos-coverage-evidence/coverage-integration-1.98.1-aarch64-apple-darwin.json
+          --diagnostics-json target/macos-coverage-evidence/coverage-diagnostics-1.98.1-aarch64-apple-darwin.json
 
       - name: Confirm measurements did not change tracked source
         run: |

@@ -296,6 +296,18 @@ mod forwarding_tests {
     }
 
     #[allow(deprecated)]
+    fn assert_exclusive_lock_is_contended(file: &File) {
+        let result = FileExt::try_lock_exclusive(file);
+        assert!(result.is_err());
+    }
+
+    #[allow(deprecated)]
+    fn assert_shared_lock_is_contended(file: &File) {
+        let result = FileExt::try_lock_shared(file);
+        assert!(result.is_err());
+    }
+
+    #[allow(deprecated)]
     #[test]
     fn public_forwarders_execute_in_the_unit_test_binary() {
         let directory = tempfile::tempdir().unwrap();
@@ -306,27 +318,57 @@ mod forwarding_tests {
             .create_new(true)
             .open(&path)
             .unwrap();
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
 
-        drop(FileExt::duplicate(&file).unwrap());
-        FileExt::allocated_size(&file).unwrap();
-        FileExt::allocate(&file, 0).unwrap();
+        let duplicate = FileExt::duplicate(&file).unwrap();
+        assert_eq!(
+            duplicate.metadata().unwrap().len(),
+            file.metadata().unwrap().len()
+        );
+
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "freebsd",
+            target_os = "android",
+            target_os = "emscripten",
+            target_os = "macos",
+            target_os = "ios",
+            all(target_os = "linux", not(target_env = "uclibc")),
+        ))]
+        {
+            FileExt::allocate(&file, 4096).unwrap();
+            assert!(file.metadata().unwrap().len() >= 4096);
+            assert!(FileExt::allocated_size(&file).unwrap() >= 4096);
+        }
 
         FileExt::fs2_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::fs2_unlock(&file).unwrap();
         FileExt::fs2_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::fs2_unlock(&file).unwrap();
         FileExt::fs2_try_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::fs2_unlock(&file).unwrap();
         FileExt::fs2_try_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::fs2_unlock(&file).unwrap();
 
         FileExt::lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::unlock(&file).unwrap();
         FileExt::lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::unlock(&file).unwrap();
         FileExt::try_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::unlock(&file).unwrap();
         FileExt::try_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::unlock(&file).unwrap();
 
         let default_forwarders = DefaultForwarders(&file);
@@ -334,12 +376,16 @@ mod forwarding_tests {
         FileExt::allocated_size(&default_forwarders).unwrap();
         FileExt::allocate(&default_forwarders, 0).unwrap();
         FileExt::fs2_lock_shared(&default_forwarders).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::fs2_unlock(&default_forwarders).unwrap();
         FileExt::fs2_lock_exclusive(&default_forwarders).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::fs2_unlock(&default_forwarders).unwrap();
         FileExt::fs2_try_lock_shared(&default_forwarders).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
         FileExt::fs2_unlock(&default_forwarders).unwrap();
         FileExt::fs2_try_lock_exclusive(&default_forwarders).unwrap();
+        assert_shared_lock_is_contended(&contender);
         FileExt::fs2_unlock(&default_forwarders).unwrap();
 
         let _ = lock_contended_error();

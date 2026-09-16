@@ -11,6 +11,40 @@ use tempfile::tempdir;
 
 const UPSTREAM_SURFACE_WORKER_RECEIPT: &str = "FS2_UPSTREAM_SURFACE_WORKER_RECEIPT";
 
+const PUBLIC_API_CONTRACTS: &[&str] = &[
+    "FileExt::duplicate",
+    "FileExt::allocated_size",
+    "FileExt::allocate",
+    "FileExt::lock_shared",
+    "FileExt::unlock",
+    "FileExt::lock_exclusive",
+    "FileExt::try_lock_shared",
+    "FileExt::try_lock_exclusive",
+    "FileExt::fs2_lock_shared",
+    "FileExt::fs2_unlock",
+    "FileExt::fs2_lock_exclusive",
+    "FileExt::fs2_try_lock_shared",
+    "FileExt::fs2_try_lock_exclusive",
+    "lock_contended_error",
+    "statvfs",
+    "free_space",
+    "available_space",
+    "total_space",
+    "allocation_granularity",
+    "FsStats::free_space",
+    "FsStats::available_space",
+    "FsStats::total_space",
+    "FsStats::allocation_granularity",
+    "FsStatsQuery::new",
+    "FsStatsQuery::snapshot",
+];
+
+fn assert_snapshot_contract(stats: FsStats) {
+    assert!(stats.available_space() <= stats.free_space());
+    assert!(stats.available_space() <= stats.total_space());
+    assert!(stats.allocation_granularity() > 0);
+}
+
 // Exercise the complete upstream method surface through a downstream generic.
 // Every acquired lock is released before the next operation.
 #[allow(deprecated)]
@@ -49,6 +83,109 @@ fn upstream_named_generic_function_items() {
     assert_eq!(
         allocation_granularity_path(path).unwrap(),
         stats.allocation_granularity()
+    );
+    assert_snapshot_contract(stats);
+
+    let query = FsStatsQuery::new(tempdir.path()).unwrap();
+    assert_snapshot_contract(query.snapshot().unwrap());
+}
+
+#[test]
+#[allow(deprecated)]
+fn public_api_contract_inventory() -> Result<()> {
+    let directory = tempdir()?;
+    let path = directory.path();
+    let file = open_file(&path.join("contract-inventory"));
+    let mut exercised = Vec::with_capacity(PUBLIC_API_CONTRACTS.len());
+
+    drop(FileExt::duplicate(&file)?);
+    exercised.push("FileExt::duplicate");
+    let _ = FileExt::allocated_size(&file)?;
+    exercised.push("FileExt::allocated_size");
+    FileExt::allocate(&file, 0)?;
+    exercised.push("FileExt::allocate");
+
+    FileExt::lock_shared(&file)?;
+    exercised.push("FileExt::lock_shared");
+    FileExt::unlock(&file)?;
+    exercised.push("FileExt::unlock");
+    FileExt::lock_exclusive(&file)?;
+    exercised.push("FileExt::lock_exclusive");
+    FileExt::unlock(&file)?;
+    FileExt::try_lock_shared(&file)?;
+    exercised.push("FileExt::try_lock_shared");
+    FileExt::unlock(&file)?;
+    FileExt::try_lock_exclusive(&file)?;
+    exercised.push("FileExt::try_lock_exclusive");
+    FileExt::unlock(&file)?;
+
+    FileExt::fs2_lock_shared(&file)?;
+    exercised.push("FileExt::fs2_lock_shared");
+    FileExt::fs2_unlock(&file)?;
+    exercised.push("FileExt::fs2_unlock");
+    FileExt::fs2_lock_exclusive(&file)?;
+    exercised.push("FileExt::fs2_lock_exclusive");
+    FileExt::fs2_unlock(&file)?;
+    FileExt::fs2_try_lock_shared(&file)?;
+    exercised.push("FileExt::fs2_try_lock_shared");
+    FileExt::fs2_unlock(&file)?;
+    FileExt::fs2_try_lock_exclusive(&file)?;
+    exercised.push("FileExt::fs2_try_lock_exclusive");
+    FileExt::fs2_unlock(&file)?;
+
+    let _ = lock_contended_error();
+    exercised.push("lock_contended_error");
+    let stats = statvfs(path)?;
+    exercised.push("statvfs");
+    let _ = free_space(path)?;
+    exercised.push("free_space");
+    let _ = available_space(path)?;
+    exercised.push("available_space");
+    let _ = total_space(path)?;
+    exercised.push("total_space");
+    let _ = allocation_granularity(path)?;
+    exercised.push("allocation_granularity");
+
+    let _ = stats.free_space();
+    exercised.push("FsStats::free_space");
+    let _ = stats.available_space();
+    exercised.push("FsStats::available_space");
+    let _ = stats.total_space();
+    exercised.push("FsStats::total_space");
+    let _ = stats.allocation_granularity();
+    exercised.push("FsStats::allocation_granularity");
+
+    let query = FsStatsQuery::new(path)?;
+    exercised.push("FsStatsQuery::new");
+    let queried = query.snapshot()?;
+    assert_snapshot_contract(queried);
+    exercised.push("FsStatsQuery::snapshot");
+
+    assert_eq!(exercised, PUBLIC_API_CONTRACTS);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn unix_statistics_reject_embedded_nul_paths() {
+    use std::ffi::OsStr;
+    use std::io::ErrorKind;
+    use std::os::unix::ffi::OsStrExt;
+
+    let query_path = Path::new(OsStr::from_bytes(b"/fs2\0query"));
+    assert_eq!(
+        FsStatsQuery::new(query_path).unwrap_err().kind(),
+        ErrorKind::InvalidInput
+    );
+
+    let mut long_path = vec![b'a'; 3584];
+    long_path[0] = b'/';
+    let midpoint = long_path.len() / 2;
+    long_path[midpoint] = 0;
+    let long_path = Path::new(OsStr::from_bytes(&long_path));
+    assert_eq!(
+        statvfs(long_path).unwrap_err().kind(),
+        ErrorKind::InvalidInput
     );
 }
 
@@ -129,6 +266,8 @@ fn upstream_statistics_surface() {
     assert!(stats.available_space() <= stats.total_space());
     assert!(queried.free_space() <= queried.total_space());
     assert!(queried.available_space() <= queried.total_space());
+    assert_snapshot_contract(stats);
+    assert_snapshot_contract(queried);
     assert_eq!(
         allocation_granularity(path).unwrap(),
         stats.allocation_granularity()

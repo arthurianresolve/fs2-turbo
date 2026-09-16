@@ -60,6 +60,27 @@ fn run() -> Result<()> {
                         .value_name("PATH")
                         .required(true)
                         .num_args(1),
+                )
+                .arg(
+                    Arg::new("unit-json")
+                        .long("unit-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("integration-json")
+                        .long("integration-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
+                )
+                .arg(
+                    Arg::new("diagnostics-json")
+                        .long("diagnostics-json")
+                        .value_name("PATH")
+                        .required(true)
+                        .num_args(1),
                 ),
         )
         .subcommand(Command::new("compatibility").about("Validate the v0.4 API contract"))
@@ -85,6 +106,21 @@ fn run() -> Result<()> {
                 arguments
                     .get_one::<String>("lcov")
                     .expect("required LCOV path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("unit-json")
+                    .expect("required unit JSON path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("integration-json")
+                    .expect("required integration JSON path is missing"),
+            ),
+            Path::new(
+                arguments
+                    .get_one::<String>("diagnostics-json")
+                    .expect("required diagnostics JSON path is missing"),
             ),
         ),
         Some(("compatibility", _)) => compatibility::run(repository_root()),

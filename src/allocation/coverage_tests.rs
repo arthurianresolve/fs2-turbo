@@ -59,6 +59,39 @@ fn completion_propagates_snapshot_failure() {
 }
 
 #[test]
+fn completion_skips_length_updates_owned_by_reservation() {
+    let temporary = tempfile::NamedTempFile::new().unwrap();
+    let read_only = File::open(temporary.path()).unwrap();
+
+    finish_allocation(&read_only, 1, 0, true).unwrap();
+}
+
+#[test]
+fn completion_trusts_an_observed_satisfied_length() {
+    let temporary = tempfile::NamedTempFile::new().unwrap();
+    let read_only = File::open(temporary.path()).unwrap();
+
+    finish_allocation(&read_only, 1, 1, false).unwrap();
+}
+
+#[test]
+fn equal_length_snapshot_avoids_a_redundant_write() {
+    let temporary = tempfile::NamedTempFile::new().unwrap();
+    let read_only = File::open(temporary.path()).unwrap();
+
+    extend_file_length_after_snapshot_with(&read_only, 0, Ok(0)).unwrap();
+}
+
+#[test]
+fn equal_snapshot_does_not_shrink_a_file_that_grew() {
+    let file = tempfile::tempfile().unwrap();
+    file.set_len(2).unwrap();
+
+    extend_file_length_after_snapshot_with(&file, 1, Ok(1)).unwrap();
+    assert_eq!(file.metadata().unwrap().len(), 2);
+}
+
+#[test]
 fn shared_allocation_propagates_platform_reservation_failure() {
     let temporary = tempfile::NamedTempFile::new().unwrap();
     let read_only = File::open(temporary.path()).unwrap();

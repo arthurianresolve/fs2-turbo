@@ -154,6 +154,8 @@ jobs:
     timeout-minutes: 20
     name: Coverage / ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
+    env:
+      FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -180,8 +182,6 @@ jobs:
         run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-${{ matrix.target }}.json"
       - name: Export coverage instantiations
         run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-${{ matrix.target }}.txt"
-      - name: Enforce native coverage policy
-        run: cargo xtask coverage --target "${{ matrix.target }}" --json "coverage-${{ matrix.target }}.json" --lcov "coverage-${{ matrix.target }}.lcov"
       - name: Measure unit-only instantiation diagnostics
         env:
           CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-unit-${{ matrix.target }}
@@ -198,6 +198,15 @@ jobs:
         env:
           CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-integration-${{ matrix.target }}
         run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-integration-${{ matrix.target }}.txt"
+      - name: Enforce native coverage policy
+        run: >-
+          cargo xtask coverage
+          --target "${{ matrix.target }}"
+          --json "coverage-${{ matrix.target }}.json"
+          --lcov "coverage-${{ matrix.target }}.lcov"
+          --unit-json "coverage-unit-${{ matrix.target }}.json"
+          --integration-json "coverage-integration-${{ matrix.target }}.json"
+          --diagnostics-json "coverage-diagnostics-${{ matrix.target }}.json"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-${{ matrix.target }}
@@ -209,6 +218,7 @@ jobs:
             coverage-unit-${{ matrix.target }}.txt
             coverage-integration-${{ matrix.target }}.json
             coverage-integration-${{ matrix.target }}.txt
+            coverage-diagnostics-${{ matrix.target }}.json
           if-no-files-found: error
 
   codecov:
