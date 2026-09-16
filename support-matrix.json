@@ -1,5 +1,6 @@
 {
-  "version": 5,
+  "version": 6,
+  "coverage_toolchain": "1.98.1",
   "evidence_levels": ["runtime", "compile", "not-covered"],
   "targets": [
     {"target": "x86_64-unknown-linux-gnu", "platform": "Linux", "evidence": "runtime", "allocation": "physical-reservation", "ci": {"job": "check", "runner": "ubuntu-latest", "toolchains": ["1.88.0", "stable"], "coverage": true}},

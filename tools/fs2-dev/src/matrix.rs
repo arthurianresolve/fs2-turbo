@@ -11,6 +11,7 @@ use crate::process;
 use crate::{Result, invalid_data};
 
 const MATRIX_TARGET_EXPRESSION: &str = "${{ matrix.target }}";
+const PRIMARY_COVERAGE_TOOLCHAIN: &str = "1.98.1";
 const REVIEWED_PACKAGE_LIST_COMMAND: &str =
     "cargo package --locked --list > \"$RUNNER_TEMP/package-files.txt\"";
 
@@ -57,6 +58,7 @@ impl Runner {
 #[serde(deny_unknown_fields)]
 struct SupportRegistry {
     version: u64,
+    coverage_toolchain: String,
     evidence_levels: Vec<EvidenceLevel>,
     targets: Vec<TargetSpec>,
 }
@@ -210,8 +212,13 @@ fn package_rust_version(root: &Path) -> Result<String> {
 }
 
 fn validate_registry(registry: &SupportRegistry, rust_version: &str) -> Result<()> {
-    if registry.version != 5 {
-        return Err(invalid_data("support matrix version must be 5"));
+    if registry.version != 6 {
+        return Err(invalid_data("support matrix version must be 6"));
+    }
+    if registry.coverage_toolchain != PRIMARY_COVERAGE_TOOLCHAIN {
+        return Err(invalid_data(format!(
+            "coverage toolchain must be pinned to Rust {PRIMARY_COVERAGE_TOOLCHAIN}"
+        )));
     }
     let levels = registry
         .evidence_levels
@@ -359,7 +366,7 @@ fn matrices(registry: &SupportRegistry) -> BTreeMap<String, Matrix> {
                     ci.coverage.then(|| MatrixEntry {
                         os: ci.runner.as_str().to_owned(),
                         target: entry.target.clone(),
-                        toolchain: ci.toolchains[0].clone(),
+                        toolchain: registry.coverage_toolchain.clone(),
                     })
                 })
                 .collect(),
@@ -1012,5 +1019,11 @@ mod tests {
         assert!(generated.contains_key("mingw"));
         assert!(generated.contains_key("uclibc"));
         assert_eq!(generated["coverage"].include.len(), 3);
+        assert!(
+            generated["coverage"]
+                .include
+                .iter()
+                .all(|entry| entry.toolchain == PRIMARY_COVERAGE_TOOLCHAIN)
+        );
     }
 }

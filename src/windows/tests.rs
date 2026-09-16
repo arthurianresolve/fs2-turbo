@@ -19,6 +19,12 @@ mod lock;
 #[path = "tests/allocation.rs"]
 mod allocation;
 
+#[path = "tests/allocation_control.rs"]
+mod allocation_control;
+
+#[path = "tests/overlapped.rs"]
+mod overlapped;
+
 struct CompletionPort(HANDLE);
 
 impl CompletionPort {

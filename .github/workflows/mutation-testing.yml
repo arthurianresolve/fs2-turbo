@@ -1,0 +1,74 @@
+name: Mutation testing
+
+on:
+  push:
+    branches: [dev-coverage]
+    paths:
+      - .github/workflows/mutation-testing.yml
+      - .cargo/mutants.toml
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 0"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mutation-testing-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mutation-testing:
+    name: ${{ matrix.platform }} mutation testing
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux
+            os: ubuntu-24.04
+            exclude-re: >-
+              (src/allocation\.rs:32:|replace && with \|\| in allocate_with_state|FilesystemCounters::windows_|ValidatedWindowsCounters|validate_windows_counters)
+          - platform: Windows
+            os: windows-2025
+            exclude-re: >-
+              (src/allocation\.rs:26:|replace && with \|\| in allocate_with_state|FilesystemCounters::unix_blocks|ValidatedUnixCounters|validate_unix_counters)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.98.1
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+
+      - name: Record tool identity
+        run: |
+          rustc -vV
+          cargo-mutants mutants --version
+
+      - name: Run mutation testing
+        run: cargo-mutants mutants --package fs2-turbo --in-place --output "${{ runner.temp }}" --timeout 30 --exclude-re '${{ matrix.exclude-re }}' --annotations github --no-times
+
+      - name: Verify tracked files were restored
+        if: always()
+        run: git diff --exit-code -- .
+
+      - name: Upload mutation report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mutation-report-${{ matrix.platform }}-${{ github.sha }}
+          path: ${{ runner.temp }}/mutants.out
+          if-no-files-found: error
+          retention-days: 14

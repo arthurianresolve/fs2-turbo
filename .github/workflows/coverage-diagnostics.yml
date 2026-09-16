@@ -1,0 +1,220 @@
+name: Coverage diagnostics
+
+on:
+  push:
+    branches:
+      - dev
+      - "1.0.0"
+      - "codex/coverage-*"
+  workflow_dispatch:
+  schedule:
+    - cron: "43 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-diagnostics-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_BUILD_JOBS: "2"
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+
+# These jobs collect diagnostic evidence. They intentionally remain independent
+# of the stable Rust 1.98.1 CI and release coverage gates.
+jobs:
+  msrv-native:
+    name: Rust 1.88.0 / ${{ matrix.label }}
+    runs-on: "${{ matrix.runner }}"
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - label: Windows x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - label: macOS arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-${{ matrix.target }}
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: "${{ github.sha }}"
+
+      - name: Install Rust 1.88.0 with coverage support
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: 1.88.0
+          target: "${{ matrix.target }}"
+          components: llvm-tools-preview
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145
+        with:
+          tool: cargo-llvm-cov@0.8.7
+
+      - name: Record source and toolchain identity
+        run: |
+          mkdir -p coverage-evidence
+          printf '%s\n' "$GITHUB_SHA" > coverage-evidence/requested-sha.txt
+          git rev-parse HEAD > coverage-evidence/checked-out-sha.txt
+          rustc +1.88.0 -vV > coverage-evidence/rustc.txt
+          cargo +1.88.0 llvm-cov --locked --version
+
+      - name: Measure Rust 1.88.0 native coverage
+        run: |
+          cargo +1.88.0 llvm-cov --locked --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --remap-path-prefix --lcov --output-path "coverage-evidence/coverage-1.88.0-${{ matrix.target }}.lcov" -- --test-threads=1
+          cargo +1.88.0 llvm-cov report --locked --target "${{ matrix.target }}" --remap-path-prefix --json --output-path "coverage-evidence/coverage-1.88.0-${{ matrix.target }}.json"
+          cargo +1.88.0 llvm-cov report --locked --target "${{ matrix.target }}" --remap-path-prefix --text --output-path "coverage-evidence/coverage-1.88.0-${{ matrix.target }}.txt"
+
+      - name: Confirm source remained unchanged
+        run: git diff --exit-code
+
+      - name: Upload Rust 1.88.0 evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-msrv-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: coverage-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  branch-native:
+    name: Nightly branch coverage / ${{ matrix.label }}
+    if: github.event_name != 'push' || startsWith(github.ref_name, 'codex/coverage-')
+    runs-on: "${{ matrix.runner }}"
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - label: Windows x86_64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+          - label: macOS arm64
+            runner: macos-latest
+            target: aarch64-apple-darwin
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-branch-${{ matrix.target }}
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: "${{ github.sha }}"
+
+      - name: Install pinned nightly with coverage support
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-09-01
+          target: "${{ matrix.target }}"
+          components: llvm-tools-preview
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145
+        with:
+          tool: cargo-llvm-cov@0.8.7
+
+      - name: Record source and toolchain identity
+        run: |
+          mkdir -p coverage-evidence
+          printf '%s\n' "$GITHUB_SHA" > coverage-evidence/requested-sha.txt
+          git rev-parse HEAD > coverage-evidence/checked-out-sha.txt
+          rustc +nightly-2026-09-01 -vV > coverage-evidence/rustc.txt
+          cargo +nightly-2026-09-01 llvm-cov --locked --version
+
+      - name: Measure native branch coverage
+        run: |
+          cargo +nightly-2026-09-01 llvm-cov --locked --branch --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --remap-path-prefix --lcov --output-path "coverage-evidence/coverage-branch-${{ matrix.target }}.lcov" -- --test-threads=1
+          cargo +nightly-2026-09-01 llvm-cov report --locked --target "${{ matrix.target }}" --remap-path-prefix --json --output-path "coverage-evidence/coverage-branch-${{ matrix.target }}.json"
+          cargo +nightly-2026-09-01 llvm-cov report --locked --target "${{ matrix.target }}" --remap-path-prefix --text --output-path "coverage-evidence/coverage-branch-${{ matrix.target }}.txt"
+
+      - name: Confirm source remained unchanged
+        run: git diff --exit-code
+
+      - name: Upload branch-coverage evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-branch-${{ matrix.target }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: coverage-evidence/
+          if-no-files-found: warn
+          retention-days: 14
+
+  mcdc-linux:
+    name: Legacy-nightly MC/DC diagnostic / Linux x86_64
+    if: github.event_name != 'push' || startsWith(github.ref_name, 'codex/coverage-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-mcdc-x86_64-unknown-linux-gnu
+    steps:
+      - name: Check out the exact revision
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+          ref: "${{ github.sha }}"
+
+      - name: Install pinned pre-removal nightly with coverage support
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2025-08-07
+          target: x86_64-unknown-linux-gnu
+          components: llvm-tools-preview
+
+      - name: Install pinned cargo-llvm-cov
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145
+        with:
+          tool: cargo-llvm-cov@0.8.7
+
+      - name: Record source and toolchain identity
+        run: |
+          mkdir -p coverage-evidence
+          printf '%s\n' "$GITHUB_SHA" > coverage-evidence/requested-sha.txt
+          git rev-parse HEAD > coverage-evidence/checked-out-sha.txt
+          rustc +nightly-2025-08-07 -vV > coverage-evidence/rustc.txt
+          cargo +nightly-2025-08-07 llvm-cov --locked --version
+
+      - name: Measure Linux MC/DC coverage
+        run: |
+          cargo +nightly-2025-08-07 llvm-cov --locked --mcdc --package fs2-turbo --lib --tests --target x86_64-unknown-linux-gnu --remap-path-prefix --lcov --output-path coverage-evidence/coverage-mcdc-x86_64-unknown-linux-gnu.lcov -- --test-threads=1
+          cargo +nightly-2025-08-07 llvm-cov report --locked --target x86_64-unknown-linux-gnu --remap-path-prefix --json --output-path coverage-evidence/coverage-mcdc-x86_64-unknown-linux-gnu.json
+          cargo +nightly-2025-08-07 llvm-cov report --locked --target x86_64-unknown-linux-gnu --remap-path-prefix --text --output-path coverage-evidence/coverage-mcdc-x86_64-unknown-linux-gnu.txt
+
+      - name: Confirm source remained unchanged
+        run: git diff --exit-code
+
+      - name: Upload MC/DC evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: coverage-mcdc-x86_64-unknown-linux-gnu-${{ github.sha }}-${{ github.run_attempt }}
+          path: coverage-evidence/
+          if-no-files-found: warn
+          retention-days: 14

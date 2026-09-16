@@ -85,9 +85,15 @@ cfg_if! {
                     return Ok(());
                 }
 
-                let len = libc::off_t::try_from(len).map_err(|_| {
-                    Error::new(ErrorKind::InvalidInput, "allocation length is too large")
-                })?;
+                let len = match libc::off_t::try_from(len) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "allocation length is too large",
+                        ));
+                    }
+                };
                 let mut fstore = libc::fstore_t {
                     fst_flags: libc::F_ALLOCATECONTIG,
                     fst_posmode: libc::F_PEOFPOSMODE,
@@ -111,19 +117,13 @@ cfg_if! {
             #[cfg(test)]
             pub(crate) fn allocate_space_with<F>(
                 file: &File,
+                state: AllocationState,
                 len: u64,
                 preallocate: &mut F,
             ) -> Result<()>
             where
                 F: FnMut(&File, &mut libc::fstore_t) -> libc::c_int,
             {
-                use std::os::unix::fs::MetadataExt;
-
-                let metadata = file.metadata()?;
-                let state = AllocationState {
-                    allocated_size: super::super::blocks_to_bytes(metadata.blocks())?,
-                    file_size: metadata.len(),
-                };
                 allocate_space_with_state(state, len, |fstore| preallocate(file, fstore))
             }
 
