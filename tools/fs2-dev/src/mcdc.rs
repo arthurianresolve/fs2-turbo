@@ -21,6 +21,7 @@ const LLVM_VERSION: &str = "22.1.8";
 const LLVM_EXPORT_TYPE: &str = "llvm.coverage.json.export";
 const LLVM_EXPORT_VERSION: &str = "3.1.0";
 const CARGO_LLVM_COV_VERSION: &str = "cargo-llvm-cov 0.8.7";
+const EXPORT_FILE_NAME: &str = "fs2-turbo-mcdc.json";
 const MAX_EXPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_MCDC_RECORDS: usize = 65_536;
 const MAX_BRANCH_RECORDS: usize = 1_048_576;
@@ -105,6 +106,20 @@ struct RustcIdentity {
     llvm_version: String,
 }
 
+struct PreparedDirectory {
+    path: PathBuf,
+    #[cfg(unix)]
+    directory: File,
+    #[cfg(windows)]
+    _guard: process::SecureDirectoryGuard,
+}
+
+impl PreparedDirectory {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
 #[derive(Default)]
 struct RecordStats {
     decisions: usize,
@@ -141,13 +156,13 @@ pub(crate) fn run(
         &repository_root,
         &rust_mcdc_root,
     )?;
-    if report_path.starts_with(&work_dir) {
+    if report_path.starts_with(work_dir.path()) {
         return Err(invalid_data(
             "diagnostic report must be retained outside the disposable work directory",
         ));
     }
 
-    let free_bytes = available_space(&work_dir)?;
+    let free_bytes = available_space(work_dir.path())?;
     if free_bytes < minimum_free_bytes {
         return Err(invalid_data(format!(
             "MC/DC work volume has {free_bytes} free bytes; at least {minimum_free_bytes} are required"
@@ -237,8 +252,8 @@ pub(crate) fn run(
         .env_remove("CARGO_ENCODED_RUSTFLAGS");
     process::capture(&mut probe, "probe patched rustc MC/DC support")?;
 
-    let export_path = work_dir.join("fs2-turbo-mcdc.json");
-    let target_dir = work_dir.join("target");
+    let export_path = work_dir.path().join(EXPORT_FILE_NAME);
+    let target_dir = work_dir.path().join("target");
     let mut coverage = Command::new("cargo");
     coverage
         .current_dir(&repository_root)
@@ -268,7 +283,7 @@ pub(crate) fn run(
         .env("LLVM_COV_FLAGS", "--skip-expansions");
     process::run(&mut coverage, "run fresh fs2-turbo MC/DC diagnostic")?;
 
-    let export_bytes = read_bounded_regular_file(&export_path, MAX_EXPORT_BYTES)?;
+    let export_bytes = read_bounded_regular_file(&work_dir, MAX_EXPORT_BYTES)?;
     let transport = validate_export(&export_bytes)?;
 
     let final_source_status = git_status(&repository_root)?;
@@ -377,10 +392,78 @@ fn validate_toolchain_name(toolchain: &str) -> Result<()> {
     Ok(())
 }
 
-fn prepare_new_directory(path: &Path, roots: &Path, rust_mcdc: &Path) -> Result<PathBuf> {
+#[cfg(target_os = "macos")]
+fn clear_inherited_directory_acl(directory: &File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    const ACL_TYPE_EXTENDED: libc::c_int = 0x0000_0100;
+
+    unsafe extern "C" {
+        fn acl_free(object: *mut libc::c_void) -> libc::c_int;
+        fn acl_init(count: libc::c_int) -> *mut libc::c_void;
+        fn acl_set_fd_np(
+            file_descriptor: libc::c_int,
+            acl: *mut libc::c_void,
+            acl_type: libc::c_int,
+        ) -> libc::c_int;
+    }
+
+    let acl = unsafe { acl_init(0) };
+    if acl.is_null() {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    let result = unsafe { acl_set_fd_np(directory.as_raw_fd(), acl, ACL_TYPE_EXTENDED) };
+    let set_error = (result != 0).then(std::io::Error::last_os_error);
+    let free_result = unsafe { acl_free(acl) };
+
+    match set_error {
+        Some(error) if error.raw_os_error() != Some(libc::EOPNOTSUPP) => return Err(error),
+        _ => {}
+    }
+    if free_result != 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+
+    Ok(())
+}
+
+fn prepare_new_directory(path: &Path, roots: &Path, rust_mcdc: &Path) -> Result<PreparedDirectory> {
     let path = prepare_absent_path(path, "work directory", roots, rust_mcdc)?;
+    #[cfg(unix)]
+    let directory = {
+        use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _};
+
+        let mut builder = fs::DirBuilder::new();
+        builder.mode(0o700).create(&path)?;
+        let directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_DIRECTORY | libc::O_NOFOLLOW)
+            .open(&path)?;
+        #[cfg(target_os = "macos")]
+        clear_inherited_directory_acl(&directory)?;
+        let metadata = directory.metadata()?;
+        // SAFETY: `geteuid` has no arguments and cannot invalidate Rust state.
+        let effective_user = unsafe { libc::geteuid() };
+        if !metadata.is_dir() || metadata.uid() != effective_user || metadata.mode() & 0o077 != 0 {
+            return Err(invalid_data(
+                "MC/DC work directory must be an owner-only directory",
+            ));
+        }
+        directory
+    };
+    #[cfg(windows)]
+    let guard = process::create_secure_directory(&path)?;
+    #[cfg(not(any(unix, windows)))]
     fs::create_dir(&path)?;
-    Ok(fs::canonicalize(path)?)
+
+    Ok(PreparedDirectory {
+        path: fs::canonicalize(path)?,
+        #[cfg(unix)]
+        directory,
+        #[cfg(windows)]
+        _guard: guard,
+    })
 }
 
 fn prepare_new_file_path(
@@ -493,8 +576,9 @@ fn validate_rustc_identity(identity: &RustcIdentity) -> Result<()> {
     Ok(())
 }
 
-fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
-    let metadata = fs::symlink_metadata(path)?;
+fn read_bounded_regular_file(directory: &PreparedDirectory, maximum: u64) -> Result<Vec<u8>> {
+    let mut file = open_export_file(directory)?;
+    let metadata = file.metadata()?;
     if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > maximum {
         return Err(invalid_data(format!(
             "MC/DC export must be a nonempty regular file no larger than {maximum} bytes"
@@ -502,13 +586,59 @@ fn read_bounded_regular_file(path: &Path, maximum: u64) -> Result<Vec<u8>> {
     }
     let capacity = usize::try_from(metadata.len())?;
     let mut bytes = Vec::with_capacity(capacity);
-    File::open(path)?
-        .take(maximum + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() != capacity {
+    let read_limit = maximum
+        .checked_add(1)
+        .ok_or_else(|| invalid_data("MC/DC export size limit overflowed"))?;
+    (&mut file).take(read_limit).read_to_end(&mut bytes)?;
+    if bytes.len() != capacity || file.metadata()?.len() != metadata.len() {
         return Err(invalid_data("MC/DC export changed while it was read"));
     }
     Ok(bytes)
+}
+
+#[cfg(unix)]
+fn open_export_file(directory: &PreparedDirectory) -> Result<File> {
+    use std::os::fd::{AsRawFd as _, FromRawFd as _};
+
+    let name = CString::new(EXPORT_FILE_NAME)?;
+    let descriptor = unsafe {
+        // SAFETY: the retained directory descriptor and NUL-terminated leaf name
+        // remain valid for the call, and a successful descriptor is owned below.
+        libc::openat(
+            directory.directory.as_raw_fd(),
+            name.as_ptr(),
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    Ok(unsafe {
+        // SAFETY: `openat` returned a new descriptor that has not been transferred.
+        File::from_raw_fd(descriptor)
+    })
+}
+
+#[cfg(windows)]
+fn open_export_file(directory: &PreparedDirectory) -> Result<File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+    };
+
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(directory.path().join(EXPORT_FILE_NAME))?;
+    if file.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(invalid_data("MC/DC export must not be a reparse point"));
+    }
+    Ok(file)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_export_file(directory: &PreparedDirectory) -> Result<File> {
+    Ok(File::open(directory.path().join(EXPORT_FILE_NAME))?)
 }
 
 fn validate_export(bytes: &[u8]) -> Result<TransportSummary> {
@@ -967,5 +1097,65 @@ mod tests {
             1
         );
         assert!(validate_source_status(b" M src/lib.rs\0").is_err());
+    }
+
+    #[cfg(windows)]
+    fn secure_mcdc_tempdir() -> tempfile::TempDir {
+        process::private_test_tempdir()
+    }
+
+    #[cfg(not(windows))]
+    fn secure_mcdc_tempdir() -> tempfile::TempDir {
+        tempfile::tempdir().unwrap()
+    }
+
+    fn prepared_test_directory() -> (tempfile::TempDir, PreparedDirectory) {
+        let parent = secure_mcdc_tempdir();
+        let source = parent.path().join("source");
+        let rust_mcdc = parent.path().join("rust-mcdc");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&rust_mcdc).unwrap();
+        let source = fs::canonicalize(source).unwrap();
+        let rust_mcdc = fs::canonicalize(rust_mcdc).unwrap();
+        let work = prepare_new_directory(&parent.path().join("work"), &source, &rust_mcdc).unwrap();
+        (parent, work)
+    }
+
+    #[test]
+    fn retained_work_directory_prevents_export_substitution() {
+        let (parent, work) = prepared_test_directory();
+        fs::write(work.path().join(EXPORT_FILE_NAME), b"authentic").unwrap();
+
+        #[cfg(unix)]
+        {
+            let retained = parent.path().join("retained");
+            fs::rename(work.path(), &retained).unwrap();
+            fs::create_dir(work.path()).unwrap();
+            fs::write(work.path().join(EXPORT_FILE_NAME), b"forged").unwrap();
+            assert_eq!(
+                read_bounded_regular_file(&work, MAX_EXPORT_BYTES).unwrap(),
+                b"authentic"
+            );
+        }
+
+        #[cfg(windows)]
+        {
+            assert!(fs::rename(work.path(), parent.path().join("moved")).is_err());
+            assert_eq!(
+                read_bounded_regular_file(&work, MAX_EXPORT_BYTES).unwrap(),
+                b"authentic"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retained_work_directory_rejects_export_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let (_parent, work) = prepared_test_directory();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        symlink(outside.path(), work.path().join(EXPORT_FILE_NAME)).unwrap();
+        assert!(read_bounded_regular_file(&work, MAX_EXPORT_BYTES).is_err());
     }
 }

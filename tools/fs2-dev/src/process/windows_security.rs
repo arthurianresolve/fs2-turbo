@@ -258,7 +258,6 @@ pub(crate) fn guard_directory_ancestry(path: &Path) -> Result<Vec<fs::File>> {
     guard_trusted_directory_ancestry(path, false)
 }
 
-#[cfg(test)]
 pub(crate) fn guard_canonical_directory_ancestry(path: &Path) -> Result<Vec<fs::File>> {
     guard_trusted_directory_ancestry(path, true)
 }
