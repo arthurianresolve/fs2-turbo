@@ -61,7 +61,16 @@ pub(crate) fn lock_error() -> Error {
 }
 
 fn lock_file(file: &File, flags: u32) -> Result<()> {
-    let mut overlapped = PrivateOverlapped::new()?;
+    lock_file_with_overlapped(file, flags, PrivateOverlapped::new())
+}
+
+#[inline(always)]
+fn lock_file_with_overlapped(
+    file: &File,
+    flags: u32,
+    overlapped: Result<PrivateOverlapped>,
+) -> Result<()> {
+    let mut overlapped = overlapped?;
     let handle = file.as_raw_handle();
     let ret = unsafe {
         // SAFETY: `file` owns a valid handle and `overlapped` is a valid zeroed structure.
@@ -83,3 +92,7 @@ fn lock_file(file: &File, flags: u32) -> Result<()> {
     };
     win32_bool_result(ret)
 }
+
+#[cfg(test)]
+#[path = "tests/lock_coverage.rs"]
+mod coverage_tests;

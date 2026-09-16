@@ -297,7 +297,10 @@ fn with_device_control_event(
     event: Result<PrivateOverlapped>,
     submit: impl FnOnce(&mut PrivateOverlapped) -> DeviceControlResult,
 ) -> DeviceControlResult {
-    let mut overlapped = event.map_err(|error| (error, 0))?;
+    let mut overlapped = match event {
+        Ok(overlapped) => overlapped,
+        Err(error) => return Err((error, 0)),
+    };
     submit(&mut overlapped)
 }
 

@@ -37,6 +37,14 @@ fn coverage_allocated_range_rejects_unrepresentable_lengths() {
 }
 
 #[test]
+fn coverage_regular_allocation_rejects_unrepresentable_lengths() {
+    let file = tempfile::tempfile().unwrap();
+    let state = super::allocation_state(&file).unwrap();
+    let error = super::allocate_regular_space(&file, state, u64::MAX).unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+}
+
+#[test]
 fn coverage_pending_device_control_is_drained() {
     let directory = tempfile::tempdir().unwrap();
     let stdout_path = directory.path().join("pending.stdout");
@@ -174,8 +182,7 @@ fn coverage_native_pending_worker() {
                 winerror::ERROR_OPLOCK_NOT_GRANTED,
                 winerror::ERROR_CANNOT_GRANT_REQUESTED_OPLOCK,
             ]
-            .into_iter()
-            .any(|code| error.raw_os_error() == Some(code as i32));
+            .contains(&(error.raw_os_error().unwrap_or_default() as u32));
             if unsupported {
                 println!("{UNAVAILABLE}: {error}");
                 return;

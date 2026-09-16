@@ -85,9 +85,15 @@ cfg_if! {
                     return Ok(());
                 }
 
-                let len = libc::off_t::try_from(len).map_err(|_| {
-                    Error::new(ErrorKind::InvalidInput, "allocation length is too large")
-                })?;
+                let len = match libc::off_t::try_from(len) {
+                    Ok(len) => len,
+                    Err(_) => {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            "allocation length is too large",
+                        ));
+                    }
+                };
                 let mut fstore = libc::fstore_t {
                     fst_flags: libc::F_ALLOCATECONTIG,
                     fst_posmode: libc::F_PEOFPOSMODE,

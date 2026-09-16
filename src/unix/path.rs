@@ -51,20 +51,28 @@ mod test {
 
     #[test]
     fn converts_paths_at_the_stack_buffer_boundary() {
-        for length in [
-            0,
-            SMALL_PATH_BUFFER_SIZE - 1,
-            SMALL_PATH_BUFFER_SIZE,
-            SMALL_PATH_BUFFER_SIZE + 1,
+        for (length, contains_null) in [
+            (0, false),
+            (SMALL_PATH_BUFFER_SIZE - 1, false),
+            (SMALL_PATH_BUFFER_SIZE, false),
+            (SMALL_PATH_BUFFER_SIZE + 1, false),
+            (SMALL_PATH_BUFFER_SIZE, true),
         ] {
-            let bytes = vec![b'a'; length];
+            let mut bytes = vec![b'a'; length];
+            if contains_null {
+                bytes[length / 2] = 0;
+            }
             let path = Path::new(OsStr::from_bytes(&bytes));
 
-            with_c_path(path, |path| {
+            let result = with_c_path(path, |path| {
                 assert_eq!(path.to_bytes(), bytes);
                 Ok(())
-            })
-            .unwrap();
+            });
+            if contains_null {
+                assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
+            } else {
+                result.unwrap();
+            }
         }
     }
 

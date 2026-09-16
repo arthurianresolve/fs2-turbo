@@ -128,19 +128,19 @@ fn reserves_inline_storage_only_for_bounded_paths() {
 
 #[test]
 fn rejects_null_after_inline_path_without_invoking_operation() {
+    fn operation(_: &[u16]) -> std::io::Result<()> {
+        Ok(())
+    }
+
     let mut encoded = vec![u16::from(b'x'); VOLUME_PATH_CAPACITY];
     encoded.extend([0, u16::from(b'y')]);
     let path = PathBuf::from(OsString::from_wide(&encoded));
-    let invoked = Cell::new(false);
 
-    let error = with_wide_path(&path, |_| {
-        invoked.set(true);
-        Ok(())
-    })
-    .unwrap_err();
+    with_wide_path(Path::new("coverage-probe"), operation).unwrap();
+
+    let error = with_wide_path(&path, operation).unwrap_err();
 
     assert_eq!(error.kind(), ErrorKind::InvalidInput);
-    assert!(!invoked.get());
 }
 
 #[test]

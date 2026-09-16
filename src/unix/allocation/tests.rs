@@ -51,6 +51,18 @@ fn rejects_negative_native_sizes() {
     assert_eq!(i64_to_u64(0, "negative value").unwrap(), 0);
     assert_eq!(i64_to_u64(4096i64, "negative value").unwrap(), 4096);
     assert!(i64_to_u64(-1i64, "negative value").is_err());
+
+    let file = tempfile::tempfile().unwrap();
+    let state = super::AllocationState {
+        allocated_size: 0,
+        file_size: 0,
+    };
+    assert_eq!(
+        super::allocate_space(&file, state, u64::MAX)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
+    );
 }
 
 #[cfg(target_os = "macos")]

@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use fs2::{
-    FileExt, FsStats, allocation_granularity, available_space, free_space, lock_contended_error,
-    statvfs, total_space,
+    FileExt, FsStats, FsStatsQuery, allocation_granularity, available_space, free_space,
+    lock_contended_error, statvfs, total_space,
 };
 use tempfile::tempdir;
 
@@ -119,12 +119,22 @@ fn upstream_statistics_surface() {
     let tempdir = tempdir().unwrap();
     let path = tempdir.path();
     let stats = statvfs(path).unwrap();
+    let query = FsStatsQuery::new(path).unwrap();
+    let queried = query.snapshot().unwrap();
 
     assert!(free_space(path).unwrap() > 0);
     let _ = available_space(path).unwrap();
     assert!(total_space(path).unwrap() > 0);
+    assert!(stats.free_space() <= stats.total_space());
+    assert!(stats.available_space() <= stats.total_space());
+    assert!(queried.free_space() <= queried.total_space());
+    assert!(queried.available_space() <= queried.total_space());
     assert_eq!(
         allocation_granularity(path).unwrap(),
+        stats.allocation_granularity()
+    );
+    assert_eq!(
+        queried.allocation_granularity(),
         stats.allocation_granularity()
     );
 }

@@ -174,6 +174,7 @@ fn signed_filesystem_value(value: i64, message: &'static str) -> Result<u64> {
 
 #[cfg(test)]
 mod test {
+    use super::super::path::SMALL_PATH_BUFFER_SIZE;
     #[cfg(all(
         not(all(target_os = "linux", target_pointer_width = "64", target_env = "gnu")),
         not(target_vendor = "apple")
@@ -185,7 +186,9 @@ mod test {
     use super::{filesystem_counters_from_statfs, signed_filesystem_value};
     use super::{space, space_from_counters, statvfs};
     use crate::stats::SpaceKind;
+    use std::ffi::OsStr;
     use std::io::ErrorKind;
+    use std::os::unix::ffi::OsStrExt;
     use tempfile::tempdir;
 
     #[test]
@@ -207,6 +210,14 @@ mod test {
             );
             assert!(space_from_counters(statvfs(tempdir.path()), kind).is_ok());
         }
+
+        let mut bytes = vec![b'a'; SMALL_PATH_BUFFER_SIZE];
+        bytes[SMALL_PATH_BUFFER_SIZE / 2] = 0;
+        let invalid = std::path::Path::new(OsStr::from_bytes(&bytes));
+        assert_eq!(
+            statvfs(invalid).unwrap_err().kind(),
+            ErrorKind::InvalidInput
+        );
     }
 
     #[test]
