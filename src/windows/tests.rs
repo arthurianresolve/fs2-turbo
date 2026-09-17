@@ -60,6 +60,25 @@ impl CompletionPort {
     }
 }
 
+#[test]
+#[should_panic]
+fn one_file_cannot_be_associated_with_two_completion_ports() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(directory.path().join("completion-port"))
+        .unwrap();
+    let _first = CompletionPort::associate(&file);
+    let _second = CompletionPort::associate(&file);
+}
+
 impl Drop for CompletionPort {
     fn drop(&mut self) {
         unsafe {

@@ -3,6 +3,41 @@
 Repository-only validation tooling for fs2-turbo. These tools are excluded from
 the published crate.
 
+## Coverage workflows
+
+- `ci.yml`: Rust 1.98.1 on Linux x86_64, Windows x86_64, and macOS arm64.
+- `coverage-msrv-validation.yml`: Rust 1.88.0 on the same native targets.
+- `coverage-mutation-validation.yml`: focused cross-platform mutations on both
+  compilers, with baseline and outcome validation.
+- `mutation-testing.yml`: scheduled or manually dispatched broader mutation tests.
+
+Native jobs retain isolated combined, unit, and integration profiles, existing
+coverage gates, and Codecov publication policy. They record exact source/tree,
+native target, compiler/LLVM, tool, run, and environment identities and verify
+SHA-256 manifests of tracked source. Reports and available failure diagnostics are
+retained for 14 days; failed jobs are not eligible Codecov uploads. Experimental
+nightly branch coverage and MC/DC runners are not part of this tooling.
+
+## Native coverage reproducibility
+
+Set `CARGO_INCREMENTAL=0` explicitly for every native coverage build, including
+local runs. Use a fresh `CARGO_LLVM_COV_TARGET_DIR` for each compiler and profile
+(combined, unit, integration), and set `FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES=1`
+when reproducing CI. Export JSON, LCOV, and text from the same profile before
+starting another build. Record the source revision and local changes, target,
+`rustc -vV`, `cargo llvm-cov --version`, and compilation environment with the
+evidence.
+
+Incremental compilation can reduce the denominator without executing additional
+code; a smaller denominator does not establish improved test coverage. Stable
+coverage does not measure branch coverage or MC/DC.
+
+Raw zero-count entries can include library mappings whose concrete downstream
+instances execute. Keep these entries in raw totals and inspect their source
+locations and symbols alongside separate unit and integration profiles. Private
+error paths still require meaningful tests; matching a covered source location
+alone does not prove that every instance has been exercised.
+
 ## Source-location execution diagnostics
 
 Coverage diagnostics schema version 4 adds `source_location_execution_union`
@@ -41,76 +76,20 @@ Do not replace the intended integration inventory with a blanket 100% union
 gate. Removing platform-inapplicable mappings reduces a denominator; grouping
 mapping variants changes presentation. Neither establishes new test execution.
 
-### Pending Windows fixture experiments
+### Native fixture follow-up
 
-The annotations do not implement or claim successful native experiments.
-Once sufficient disk headroom is available, use this bounded investigation:
+Prior bounded NTFS experiments did not reach the legacy-provider or pending-I/O
+candidates and did not close those gaps. Keep local evidence separate from new
+measurements; passing API assertions alone does not close a mapping gap.
 
-1. Capture fresh, isolated combined, unit, and integration profiles for the same
-   source revision on Rust 1.88.0 and Rust 1.98.1, using the settings above.
-2. For legacy fallback, select an explicitly approved local/provider fixture.
-   Demonstrate that public filesystem-stat queries genuinely reach the legacy
-   provider. Do not assume that SMB, FAT, or exFAT forces fallback, provision a
-   network share automatically, or downgrade the operating system to force it.
-3. For pending I/O, reuse the public sparse-allocation scenario on an approved
-   fixture and inspect whether the completion closure, wait helper, and private
-   overlapped state actually execute. The existing ordinary overlapped test is
-   not evidence of pending completion unless those mappings execute.
-4. Predeclare at most three attempts per fixture, at most 2 MiB of data per
-   attempt, and a 120-second wall-clock deadline per attempt. Run under an
-   owned-process timeout with reliable teardown; keep buffers and private event
-   handles live until native completion. Preserve private directory permissions,
-   IOCP isolation, error propagation, and all failed or inconclusive evidence.
-5. Report observed mappings and API assertions, including file length, preserved
-   contents, and failure behavior. A fixture that never exercises the intended
-   route is inconclusive, not passing. Do not retry indefinitely for a higher
-   percentage or promote an unstable fixture to required CI.
+Use fresh isolated profiles on both compilers for a newly approved fixture, at
+most three attempts per fixture/compiler, at most 2 MiB per attempt, and a
+120-second owned-process deadline with reliable teardown. Report observed
+mappings, file length, preserved contents, and error behavior. Retain failed and
+inconclusive evidence rather than retrying indefinitely for a higher percentage.
 
-No production bypass flags, exposed private APIs, weakened allocation checks,
-or removal of defensive error paths are justified solely by these experiments.
-
-## MC/DC diagnostic
-
-`mcdc-diagnostic` performs a fresh, isolated engineering diagnostic with the
-Rust-MCDC baseline
-`e57cec60d416d49dc9d5bdb9b23ea14f20d4a49e`. It does not participate in CI or
-release gates and does not replace the native line, region, function, or
-instantiation coverage workflow.
-
-The command requires:
-
-- a completely clean Rust-MCDC checkout at the exact baseline;
-- a rustup-linked patched Rust 1.98.1 toolchain built from rustc commit
-  `48a229ceaefd4985c50990b14116b6d856af0985` with LLVM 22.1.8;
-- `cargo-llvm-cov 0.8.7` in `PATH`;
-- new absolute work and report paths outside both source repositories; and
-- at least 8 GiB free on the work volume unless a different explicit floor is
-  supplied.
-
-```text
-cargo xtask mcdc-diagnostic \
-  --rust-mcdc-root <absolute-rust-mcdc-checkout> \
-  --toolchain <rustup-linked-patched-toolchain> \
-  --work-dir <new-absolute-disposable-directory> \
-  --report <new-absolute-report.json>
-```
-
-The runner removes ambient Rust instrumentation flags, uses a fresh isolated
-Cargo target, probes the patched compiler's MC/DC flag, runs fs2-turbo tests
-serially, and accepts only LLVM JSON export type
-`llvm.coverage.json.export` version `3.1.0`. Version `3.0.1` and stale output are
-rejected rather than translated.
-
-The report retains exact source/tree, Rust-MCDC, rustc binary, compiler/LLVM,
-tool, and export identities. It reconciles LLVM's file and function MC/DC
-projections and reports decision, condition-pair, executed-vector, and
-`not_evaluated` counts. LLVM's condition-pair flags remain transport-level
-diagnostics: the command does not construct an independent unique-cause or
-masking proof.
-
-The pinned compiler slice covers root-expansion, non-async, non-generic
-free-function `if` expressions with nested short-circuit Boolean leaves, up to
-16 conditions. Negation and unsupported constructs are not silently counted as
-covered. The semantic census remains incomplete, so the output cannot support a
-100% MC/DC, qualification, certification, source/object-equivalence, or release
-claim.
+Do not automatically provision network shares, downgrade the OS, assume a
+filesystem forces fallback, or promote unstable fixtures to required CI. Preserve
+private-directory permissions, IOCP isolation, native buffer/event lifetimes,
+allocation checks, and error propagation. No production bypasses, exposed private
+APIs, or removal of defensive paths are justified by a coverage target.

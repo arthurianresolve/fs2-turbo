@@ -21,6 +21,29 @@ fn maps_modern_disk_space_information() {
 }
 
 #[test]
+fn accepts_modern_free_space_equal_to_physical_total() {
+    for units in [1, 10, u64::MAX / 1024] {
+        let info = DISK_SPACE_INFORMATION {
+            ActualAvailableAllocationUnits: units,
+            ActualTotalAllocationUnits: units,
+            CallerTotalAllocationUnits: units,
+            CallerAvailableAllocationUnits: units,
+            SectorsPerAllocationUnit: 2,
+            BytesPerSector: 512,
+            ..Default::default()
+        };
+
+        let counters = counters_from_disk_space_information(info).unwrap();
+        let stats = crate::FsStats::from_counters(counters).unwrap();
+        let bytes = units * 1024;
+        assert_eq!(stats.allocation_granularity(), 1024);
+        assert_eq!(stats.free_space(), bytes);
+        assert_eq!(stats.available_space(), bytes);
+        assert_eq!(stats.total_space(), bytes);
+    }
+}
+
+#[test]
 fn rejects_invalid_modern_scalar_snapshot() {
     let counters = FilesystemCounters::windows_modern_bytes(4096, 100, 101, 100);
 
