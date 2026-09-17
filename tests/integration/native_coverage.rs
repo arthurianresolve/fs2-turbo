@@ -68,6 +68,87 @@ fn linux_keep_size_reservation_extends_logical_length() {
 
 #[cfg(windows)]
 #[test]
+fn windows_drive_root_queries_succeed() {
+    use std::path::{Component, Prefix};
+
+    let temporary = tempfile::tempdir().unwrap();
+    let path = temporary.path().canonicalize().unwrap();
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        panic!("the canonical temporary path has no Windows prefix");
+    };
+    let drive = match prefix.kind() {
+        Prefix::Disk(drive) | Prefix::VerbatimDisk(drive) => drive,
+        _ => {
+            let error = std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "the temporary directory is not on a drive-letter volume",
+            );
+            native_fixture_unavailable!("Windows drive-root queries", &error);
+            return;
+        }
+    };
+    let root = format!("{}:\\", char::from(drive));
+    let stats = fs2::statvfs(&root).unwrap();
+    assert!(stats.allocation_granularity() > 0);
+    assert!(fs2::allocation_granularity(&root).unwrap() > 0);
+
+    // Live space counters can change between calls; assert successful queries
+    // without assuming identical snapshots or quota-independent totals.
+    fs2::free_space(&root).unwrap();
+    fs2::available_space(&root).unwrap();
+    fs2::total_space(&root).unwrap();
+}
+
+#[cfg(windows)]
+fn windows_logical_drives() -> u32 {
+    let drives = unsafe {
+        // SAFETY: this read-only query takes no pointers or handles.
+        windows_sys::Win32::Storage::FileSystem::GetLogicalDrives()
+    };
+    assert_ne!(
+        drives,
+        0,
+        "unable to query logical drives: {}",
+        std::io::Error::last_os_error()
+    );
+    drives
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_unassigned_drive_root_returns_native_errors() {
+    let drives = windows_logical_drives();
+    let Some(index) = (0u8..26).rev().find(|index| drives & (1u32 << *index) == 0) else {
+        let error = std::io::Error::other("all drive letters are assigned");
+        native_fixture_unavailable!("Windows unassigned drive root", &error);
+        return;
+    };
+    let root = format!("{}:\\", char::from(b'A' + index));
+    let errors = [
+        fs2::statvfs(&root).err(),
+        fs2::free_space(&root).err(),
+        fs2::available_space(&root).err(),
+        fs2::total_space(&root).err(),
+        fs2::allocation_granularity(&root).err(),
+    ];
+    if windows_logical_drives() & (1u32 << index) != 0 {
+        let error = std::io::Error::other("the selected drive became assigned during the queries");
+        native_fixture_unavailable!("Windows unassigned drive root changed", &error);
+        return;
+    }
+    for error in errors {
+        let error = error.expect("an unassigned drive root must not return filesystem statistics");
+        assert_ne!(
+            error
+                .raw_os_error()
+                .expect("preserve the native error code"),
+            0
+        );
+    }
+}
+
+#[cfg(windows)]
+#[test]
 fn windows_oversized_allocation_preserves_existing_file() {
     use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
 
