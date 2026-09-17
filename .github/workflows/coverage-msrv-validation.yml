@@ -20,6 +20,11 @@ jobs:
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
     env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
+      COVERAGE_TOOLCHAIN: "1.88.0"
+      COVERAGE_TARGET: ${{ matrix.target }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-combined-${{ matrix.target }}
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
     strategy:
       fail-fast: false
@@ -27,6 +32,7 @@ jobs:
         include:
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,14 +49,7 @@ jobs:
           fallback: none
       - name: Record exact evidence provenance
         shell: bash
-        run: |
-          {
-            printf 'sha=%s\n' "$GITHUB_SHA"
-            printf 'target=%s\n' '${{ matrix.target }}'
-            rustc --version --verbose
-            cargo --version --locked
-            cargo llvm-cov --version --locked
-          } > "coverage-msrv-${{ matrix.target }}-provenance.txt"
+        run: bash .github/scripts/coverage-provenance.sh record "coverage-msrv-${{ matrix.target }}"
       - name: Measure combined native coverage
         run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --remap-path-prefix --lcov --output-path "coverage-msrv-${{ matrix.target }}.lcov" -- --test-threads=1
       - name: Export combined coverage JSON
@@ -82,6 +81,10 @@ jobs:
           --unit-json "coverage-msrv-unit-${{ matrix.target }}.json"
           --integration-json "coverage-msrv-integration-${{ matrix.target }}.json"
           --diagnostics-json "coverage-msrv-diagnostics-${{ matrix.target }}.json"
+      - name: Verify source identity after measurement
+        if: always()
+        shell: bash
+        run: bash .github/scripts/coverage-provenance.sh verify "coverage-msrv-${{ matrix.target }}"
       - name: Upload exact-SHA MSRV evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -97,4 +100,6 @@ jobs:
             coverage-msrv-integration-${{ matrix.target }}.txt
             coverage-msrv-diagnostics-${{ matrix.target }}.json
             coverage-msrv-${{ matrix.target }}-provenance.txt
-          if-no-files-found: warn
+            coverage-msrv-${{ matrix.target }}-source.sha256
+          if-no-files-found: error
+          retention-days: 14
