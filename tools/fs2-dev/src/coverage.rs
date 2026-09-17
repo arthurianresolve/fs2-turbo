@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Result, invalid_data};
 
+mod source_locations;
+
 const LLVM_COVERAGE_EXPORT: &str = "llvm.coverage.json.export";
 
 #[derive(Clone, Copy, Debug)]
@@ -226,6 +228,10 @@ struct FileInstantiationGap {
 struct InstantiationDiagnostics {
     entry_count: u64,
     executed_entries: u64,
+    workspace_entry_count: u64,
+    executed_workspace_entries: u64,
+    external_entry_count: u64,
+    executed_external_entries: u64,
     definition_groups: u64,
     covered_definition_groups: u64,
     asymmetric_definition_groups: u64,
@@ -253,7 +259,10 @@ struct ProfileDiagnosticsReport<'a> {
     profile: &'a str,
     llvm_instantiations: Metric,
     json_entries: Metric,
+    workspace_json_entries: Metric,
+    external_json_entries: Metric,
     source_definitions: Metric,
+    source_location_execution_union: source_locations::SourceLocationExecutionUnion,
     asymmetric_definition_groups: u64,
     definitions: Vec<DefinitionDiagnosticsRecord>,
     file_gaps: &'a [FileInstantiationGap],
@@ -369,11 +378,15 @@ fn print_instantiation_diagnostics(
     diagnostics: &InstantiationDiagnostics,
 ) {
     println!(
-        "{profile} instantiation structure for {target}: LLVM instantiations {}/{}, JSON entries {}/{}, source-definition groups {}/{}, asymmetric groups {}",
+        "{profile} instantiation structure for {target}: LLVM instantiations {}/{}, JSON entries {}/{}, workspace JSON entries {}/{}, external/compiler JSON entries {}/{}, source-definition groups {}/{}, asymmetric groups {}",
         data.totals.instantiations.covered,
         data.totals.instantiations.count,
         diagnostics.executed_entries,
         diagnostics.entry_count,
+        diagnostics.executed_workspace_entries,
+        diagnostics.workspace_entry_count,
+        diagnostics.executed_external_entries,
+        diagnostics.external_entry_count,
         diagnostics.covered_definition_groups,
         diagnostics.definition_groups,
         diagnostics.asymmetric_definition_groups,
@@ -393,15 +406,43 @@ fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnos
     let groups = definition_groups(data)?;
     let mut entry_count = 0_u64;
     let mut executed_entries = 0_u64;
+    let mut workspace_entry_count = 0_u64;
+    let mut executed_workspace_entries = 0_u64;
+    let mut external_entry_count = 0_u64;
+    let mut executed_external_entries = 0_u64;
 
     for function in &data.functions {
         entry_count = entry_count
             .checked_add(1)
             .ok_or_else(|| invalid_data("coverage function-entry count overflowed"))?;
+        let workspace_owned = function
+            .filenames
+            .first()
+            .is_some_and(|filename| normalize_source_path(filename).is_some());
+        if workspace_owned {
+            workspace_entry_count = workspace_entry_count.checked_add(1).ok_or_else(|| {
+                invalid_data("coverage workspace function-entry count overflowed")
+            })?;
+        } else {
+            external_entry_count = external_entry_count
+                .checked_add(1)
+                .ok_or_else(|| invalid_data("coverage external function-entry count overflowed"))?;
+        }
         if function.count != 0 {
             executed_entries = executed_entries
                 .checked_add(1)
                 .ok_or_else(|| invalid_data("coverage executed-entry count overflowed"))?;
+            if workspace_owned {
+                executed_workspace_entries =
+                    executed_workspace_entries.checked_add(1).ok_or_else(|| {
+                        invalid_data("coverage executed workspace-entry count overflowed")
+                    })?;
+            } else {
+                executed_external_entries =
+                    executed_external_entries.checked_add(1).ok_or_else(|| {
+                        invalid_data("coverage executed external-entry count overflowed")
+                    })?;
+            }
         }
     }
 
@@ -432,6 +473,10 @@ fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnos
     Ok(InstantiationDiagnostics {
         entry_count,
         executed_entries,
+        workspace_entry_count,
+        executed_workspace_entries,
+        external_entry_count,
+        executed_external_entries,
         definition_groups: groups.len().try_into()?,
         covered_definition_groups: groups
             .values()
@@ -641,6 +686,8 @@ fn write_diagnostics_report<const N: usize>(
     let profiles = profiles
         .into_iter()
         .map(|(profile, data, groups, diagnostics, unit_groups)| {
+            let source_location_execution_union =
+                source_locations::summarize(target, profile, groups, unit_groups)?;
             let definitions = groups
                 .iter()
                 .map(|(key, state)| {
@@ -670,25 +717,34 @@ fn write_diagnostics_report<const N: usize>(
                     }
                 })
                 .collect();
-            ProfileDiagnosticsReport {
+            Ok(ProfileDiagnosticsReport {
                 profile,
                 llvm_instantiations: data.totals.instantiations,
                 json_entries: Metric {
                     count: diagnostics.entry_count,
                     covered: diagnostics.executed_entries,
                 },
+                workspace_json_entries: Metric {
+                    count: diagnostics.workspace_entry_count,
+                    covered: diagnostics.executed_workspace_entries,
+                },
+                external_json_entries: Metric {
+                    count: diagnostics.external_entry_count,
+                    covered: diagnostics.executed_external_entries,
+                },
                 source_definitions: Metric {
                     count: diagnostics.definition_groups,
                     covered: diagnostics.covered_definition_groups,
                 },
+                source_location_execution_union,
                 asymmetric_definition_groups: diagnostics.asymmetric_definition_groups,
                 definitions,
                 file_gaps: &diagnostics.file_gaps,
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let report = CoverageDiagnosticsReport {
-        schema_version: 2,
+        schema_version: 4,
         target,
         intended_integration_definitions,
         profiles,
@@ -696,6 +752,11 @@ fn write_diagnostics_report<const N: usize>(
     let mut encoded = serde_json::to_vec_pretty(&report)?;
     encoded.push(b'\n');
     fs::write(path, encoded)?;
+    for profile in &report.profiles {
+        profile
+            .source_location_execution_union
+            .print(target, profile.profile);
+    }
     Ok(())
 }
 
@@ -972,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn distinguishes_raw_entries_from_source_definition_groups() {
+    fn distinguishes_raw_workspace_and_external_entries_from_source_definition_groups() {
         let complete = Metric {
             count: 1,
             covered: 1,
@@ -1006,11 +1067,17 @@ mod tests {
                     filenames: vec!["src/lib.rs".to_owned()],
                     regions: vec![vec![11, 1, 11, 8, 0, 0, 0, 0]],
                 },
+                FunctionCoverage {
+                    name: "external-uncovered-instance".to_owned(),
+                    count: 0,
+                    filenames: vec![r"\rustc\toolchain\library\core\src\panic.rs".to_owned()],
+                    regions: vec![vec![99, 1, 100, 2, 0, 0, 0, 0]],
+                },
             ],
             totals: Totals {
                 functions: complete,
                 instantiations: Metric {
-                    count: 3,
+                    count: 4,
                     covered: 1,
                 },
                 lines: complete,
@@ -1021,8 +1088,12 @@ mod tests {
         assert_eq!(
             instantiation_diagnostics(&data).unwrap(),
             InstantiationDiagnostics {
-                entry_count: 3,
+                entry_count: 4,
                 executed_entries: 1,
+                workspace_entry_count: 3,
+                executed_workspace_entries: 1,
+                external_entry_count: 1,
+                executed_external_entries: 0,
                 definition_groups: 2,
                 covered_definition_groups: 1,
                 asymmetric_definition_groups: 1,

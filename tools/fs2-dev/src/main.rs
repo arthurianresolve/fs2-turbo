@@ -1,7 +1,6 @@
 mod compatibility;
 mod coverage;
 mod matrix;
-mod mcdc;
 mod process;
 
 use std::error::Error;
@@ -85,43 +84,6 @@ fn run() -> Result<()> {
                 ),
         )
         .subcommand(Command::new("compatibility").about("Validate the v0.4 API contract"))
-        .subcommand(
-            Command::new("mcdc-diagnostic")
-                .about(
-                    "Run a non-authoritative MC/DC diagnostic with the pinned Rust-MCDC baseline",
-                )
-                .arg(
-                    Arg::new("rust-mcdc-root")
-                        .long("rust-mcdc-root")
-                        .value_name("ABSOLUTE_PATH")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("toolchain")
-                        .long("toolchain")
-                        .value_name("RUSTUP_TOOLCHAIN")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("work-dir")
-                        .long("work-dir")
-                        .value_name("NEW_ABSOLUTE_PATH")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("report")
-                        .long("report")
-                        .value_name("NEW_ABSOLUTE_PATH")
-                        .required(true),
-                )
-                .arg(
-                    Arg::new("minimum-free-bytes")
-                        .long("minimum-free-bytes")
-                        .value_name("BYTES")
-                        .default_value("8589934592")
-                        .value_parser(clap::value_parser!(u64)),
-                ),
-        )
         .get_matches();
 
     match matches.subcommand() {
@@ -162,30 +124,6 @@ fn run() -> Result<()> {
             ),
         ),
         Some(("compatibility", _)) => compatibility::run(repository_root()),
-        Some(("mcdc-diagnostic", arguments)) => mcdc::run(
-            repository_root(),
-            Path::new(
-                arguments
-                    .get_one::<String>("rust-mcdc-root")
-                    .expect("required argument"),
-            ),
-            arguments
-                .get_one::<String>("toolchain")
-                .expect("required argument"),
-            Path::new(
-                arguments
-                    .get_one::<String>("work-dir")
-                    .expect("required argument"),
-            ),
-            Path::new(
-                arguments
-                    .get_one::<String>("report")
-                    .expect("required argument"),
-            ),
-            *arguments
-                .get_one::<u64>("minimum-free-bytes")
-                .expect("defaulted argument"),
-        ),
         _ => unreachable!("clap requires a known subcommand"),
     }
 }

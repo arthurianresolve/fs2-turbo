@@ -7,7 +7,7 @@ use std::io::{Read as _, Seek as _};
 #[cfg(all(test, unix))]
 use std::path::Path;
 #[cfg(windows)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus, Output, Stdio};
 use std::time::Duration;
 #[cfg(unix)]
@@ -30,30 +30,6 @@ const MAX_PROCESS_TIMEOUT_SECONDS: u64 = 86_400;
 const TERMINATION_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const PROCESS_GROUP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
-
-#[cfg(windows)]
-pub(crate) struct SecureDirectoryGuard {
-    _directories: Vec<File>,
-}
-
-#[cfg(windows)]
-pub(crate) fn create_secure_directory(path: &Path) -> Result<SecureDirectoryGuard> {
-    windows_security::require_canonical_local_fixed_volume(path, "secure work directory")?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid_data("secure work directory has no parent"))?;
-    let mut directories = windows_security::guard_canonical_directory_ancestry(parent)?;
-    std::fs::create_dir(path)?;
-    directories.push(windows_security::harden_new_private_directory(path)?);
-    Ok(SecureDirectoryGuard {
-        _directories: directories,
-    })
-}
-
-#[cfg(all(test, windows))]
-pub(crate) fn private_test_tempdir() -> tempfile::TempDir {
-    windows_security::private_test_tempdir()
-}
 
 pub(crate) fn cargo() -> Command {
     Command::new(std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")))
