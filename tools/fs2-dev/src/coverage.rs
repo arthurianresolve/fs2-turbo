@@ -16,6 +16,33 @@ struct IntendedIntegrationDefinition {
     source: &'static str,
 }
 
+const WINDOWS_INTEGRATION_DEFINITIONS: &[IntendedIntegrationDefinition] = &[
+    IntendedIntegrationDefinition {
+        api: "windows::stats::modern::io_error_from_hresult",
+        source: "src/windows/stats/modern.rs:83:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "windows::stats::modern::hresult_from_win32",
+        source: "src/windows/stats/modern.rs:100:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "windows::stats::modern::modern_statvfs_unavailable",
+        source: "src/windows/stats/modern.rs:105:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "windows::stats::space::space_after_exact_root",
+        source: "src/windows/stats/space.rs:128:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "windows::stats::space::exact_root_value",
+        source: "src/windows/stats/space.rs:378:1",
+    },
+    IntendedIntegrationDefinition {
+        api: "windows::stats::space::is_volume_resolution_error",
+        source: "src/windows/stats/space.rs:388:1",
+    },
+];
+
 // These externally reachable definitions form the stable integration
 // contract. Compiler-created monomorphizations remain diagnostic because their
 // number and linkage names vary by toolchain even when this contract does not.
@@ -599,11 +626,20 @@ fn validate_integration_instantiations(
     integration_groups: &BTreeMap<DefinitionKey, DefinitionGroupState>,
 ) -> Result<Metric> {
     let policy = integration_policy_for_target(target)?;
-    let intended = validate_intended_integration_definitions(
+    let mut intended = validate_intended_integration_definitions(
         target,
         policy.intended_definitions,
         integration_groups,
     )?;
+    if target == "x86_64-pc-windows-msvc" {
+        let windows = validate_intended_integration_definitions(
+            target,
+            WINDOWS_INTEGRATION_DEFINITIONS,
+            integration_groups,
+        )?;
+        intended.count += windows.count;
+        intended.covered += windows.covered;
+    }
 
     let unowned = integration_groups
         .iter()
@@ -1104,6 +1140,82 @@ mod tests {
                     count: 3,
                 }],
             }
+        );
+    }
+
+    #[test]
+    fn windows_integration_contract_requires_each_native_definition() {
+        let make_groups = || {
+            INTENDED_INTEGRATION_DEFINITIONS
+                .iter()
+                .chain(WINDOWS_INTEGRATION_DEFINITIONS)
+                .map(|definition| {
+                    let (source, column) = definition.source.rsplit_once(':').unwrap();
+                    let (filename, line) = source.rsplit_once(':').unwrap();
+                    (
+                        DefinitionKey {
+                            filename: filename.to_owned(),
+                            line: line.parse().unwrap(),
+                            column: column.parse().unwrap(),
+                            regions: Vec::new(),
+                        },
+                        DefinitionGroupState {
+                            entries: 2,
+                            covered_entries: 1,
+                            symbols: BTreeSet::new(),
+                        },
+                    )
+                })
+                .collect::<BTreeMap<_, _>>()
+        };
+        let unit_groups = make_groups();
+        let mut integration_groups = make_groups();
+        let target = "x86_64-pc-windows-msvc";
+        let metric =
+            validate_integration_instantiations(target, &unit_groups, &integration_groups).unwrap();
+        assert_eq!(metric.count, 36);
+        assert_eq!(metric.covered, 36);
+
+        for definition in WINDOWS_INTEGRATION_DEFINITIONS {
+            let key = integration_groups
+                .keys()
+                .find(|key| definition_id(key) == definition.source)
+                .unwrap()
+                .clone();
+            let mut state = integration_groups.remove(&key).unwrap();
+            let error =
+                validate_integration_instantiations(target, &unit_groups, &integration_groups)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(&format!(
+                "missing [{} ({})]",
+                definition.api, definition.source
+            )));
+
+            state.covered_entries = 0;
+            integration_groups.insert(key.clone(), state);
+            let error =
+                validate_integration_instantiations(target, &unit_groups, &integration_groups)
+                    .unwrap_err()
+                    .to_string();
+            assert!(error.contains(&format!(
+                "uncovered [{} ({})]",
+                definition.api, definition.source
+            )));
+            integration_groups.get_mut(&key).unwrap().covered_entries = 1;
+        }
+
+        integration_groups.retain(|key, _| !key.filename.starts_with("src/windows/"));
+        let metric = validate_integration_instantiations(
+            "x86_64-unknown-linux-gnu",
+            &unit_groups,
+            &integration_groups,
+        )
+        .unwrap();
+        assert_eq!(metric.count, 30);
+        assert_eq!(metric.covered, 30);
+        assert!(
+            validate_integration_instantiations(target, &unit_groups, &integration_groups).is_err()
         );
     }
 
