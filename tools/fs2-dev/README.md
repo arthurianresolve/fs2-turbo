@@ -3,6 +3,29 @@
 Repository-only validation tooling for fs2-turbo. These tools are excluded from
 the published crate.
 
+## Native coverage reproducibility
+
+Set `CARGO_INCREMENTAL=0` explicitly for every native coverage build, including
+local runs. Use a fresh `CARGO_LLVM_COV_TARGET_DIR` for each compiler and profile
+(combined, unit, integration), and set `FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES=1`
+when reproducing CI. Export JSON, LCOV, and text from the same profile before
+starting another build. Record the source revision and local changes, target,
+`rustc -vV`, `cargo llvm-cov --version`, and compilation environment with the
+evidence.
+
+Incremental compilation changes which unused-function coverage mappings rustc
+emits. On Windows with Rust 1.98.1 at `c53c05e`, switching only
+`CARGO_INCREMENTAL` from `0` to `1` changed combined instantiations from
+`348/406` to `348/375`; the executed count stayed at 348. The smaller denominator
+does not establish improved test coverage. CI comparisons use the non-incremental
+profile.
+
+Raw zero-count entries can include library mappings whose concrete downstream
+instances execute. Keep these entries in raw totals and inspect their source
+locations and symbols alongside separate unit and integration profiles. Private
+error paths still require meaningful tests; matching a covered source location
+alone does not prove that every instance has been exercised.
+
 ## Source-location execution diagnostics
 
 Coverage diagnostics schema version 4 adds `source_location_execution_union`

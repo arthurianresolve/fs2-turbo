@@ -20,6 +20,7 @@ jobs:
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
     env:
+      CARGO_INCREMENTAL: "0"
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
     strategy:
       fail-fast: false

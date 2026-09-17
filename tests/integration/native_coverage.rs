@@ -67,6 +67,34 @@ fn linux_keep_size_reservation_extends_logical_length() {
 }
 
 #[cfg(windows)]
+#[test]
+fn windows_oversized_allocation_preserves_existing_file() {
+    use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+
+    use fs2::FileExt;
+
+    const CONTENTS: &[u8] = b"allocation boundary sentinel";
+
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(CONTENTS).unwrap();
+    file.seek(SeekFrom::Start(3)).unwrap();
+    let allocated = FileExt::allocated_size(&file).unwrap();
+
+    for length in [i64::MAX as u64 + 1, u64::MAX] {
+        let error = FileExt::allocate(&file, length).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert_eq!(file.metadata().unwrap().len(), CONTENTS.len() as u64);
+        assert_eq!(FileExt::allocated_size(&file).unwrap(), allocated);
+        assert_eq!(file.stream_position().unwrap(), 3);
+    }
+
+    file.seek(SeekFrom::Start(0)).unwrap();
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents).unwrap();
+    assert_eq!(contents, CONTENTS);
+}
+
+#[cfg(windows)]
 fn mark_sparse(file: &std::fs::File) -> std::io::Result<()> {
     use std::os::windows::io::AsRawHandle;
 
@@ -143,6 +171,17 @@ fn windows_overlapped_sparse_allocation_preserves_tail() {
     setup.seek(SeekFrom::Start(TAIL_OFFSET)).unwrap();
     setup.write_all(SENTINEL).unwrap();
     setup.flush().unwrap();
+    let allocated = FileExt::allocated_size(&setup).unwrap();
+    for length in [i64::MAX as u64 + 1, u64::MAX] {
+        let error = FileExt::allocate(&setup, length).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert_eq!(setup.metadata().unwrap().len(), FILE_LENGTH);
+        assert_eq!(FileExt::allocated_size(&setup).unwrap(), allocated);
+        assert_eq!(
+            setup.stream_position().unwrap(),
+            TAIL_OFFSET + SENTINEL.len() as u64
+        );
+    }
     drop(setup);
 
     let file = OpenOptions::new()
