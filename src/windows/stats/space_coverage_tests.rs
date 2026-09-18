@@ -1,7 +1,27 @@
 use super::{
-    DirectSpace, appears_to_be_drive_root, exact_root_space_from_path, project_handle_space,
+    DirectSpace, appears_to_be_drive_root, direct_space_result, exact_root_space_from_path,
+    project_handle_space,
 };
 use crate::stats::SpaceKind;
+
+#[test]
+fn drive_root_predicate_rejects_short_paths() {
+    let root = [u16::from(b'C'), u16::from(b':'), u16::from(b'\\'), 0];
+    for length in 0..root.len() {
+        assert!(!appears_to_be_drive_root(&root[..length]));
+    }
+    assert!(appears_to_be_drive_root(&root));
+}
+
+#[test]
+fn direct_space_rejects_available_above_physical_free() {
+    for kind in [SpaceKind::Free, SpaceKind::Available] {
+        assert_eq!(
+            direct_space_result(1, 8, 10, 7, kind),
+            DirectSpace::Unavailable
+        );
+    }
+}
 
 #[test]
 fn exact_root_fast_path_rejects_data_after_the_terminator() {
