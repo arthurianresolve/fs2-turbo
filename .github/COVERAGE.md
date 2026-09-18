@@ -46,7 +46,9 @@ MC/DC, region, or compiler-instantiation coverage.
   branch or MC/DC measurement, or compiler-instantiation coverage.
 - Existing broad and focused mutation workflows are retained. Unviable mutations
   are not killed mutants; timeouts and missing outcomes are not successful evidence.
-- Nightly branch/MC/DC collection is optional future work, not enabled by this change.
+- The pinned nightly branch gate measures reviewed branch outcomes independently on
+  all three native targets. MC/DC remains unmeasured; LLVM branch instrumentation
+  does not cover every Rust construct and is not complete instantiation coverage.
 
 ## Publication
 
@@ -74,7 +76,7 @@ zero-denominator 100% results.
 
 ## Local validation
 
-Run `node --test .github/scripts/coverage-audit.test.cjs` for parser, provenance,
+Run `node --test .github/scripts/coverage-audit.test.cjs .github/scripts/coverage-relocate.test.cjs` for parser, provenance,
 integrity, source-inventory, and per-platform merge fixtures. Existing fs2-dev matrix
 and coverage tests remain responsible for repository workflow and native gate policy.
 No previous artifact is relabelled as a fresh measurement after a source change.
@@ -109,8 +111,58 @@ churn, and export-schema changes require explicit review rather than fuzzy match
 or automatic baseline refresh. External/compiler filenames are retained as opaque
 diagnostic identities and are never opened as filesystem paths.
 
+The review-only relocation helper can propose whole-line moves of an unchanged,
+uniquely identified named-function body. It requires the historical JSON digest
+recorded in the primary policy, a sealed current native artifact set, unchanged
+compiler/exporter identities, and source bytes from explicit immutable Git commits.
+Changed bodies, ambiguous duplicate bodies, new misses, symbol churn, and external
+source relocation are rejected. The ordinary CI gate remains strict and never loads
+these proposals automatically; adopting a proposal still requires explicit review.
+
+```text
+node .github/scripts/coverage-relocate.cjs TARGET CANDIDATE_SHA BASELINE_JSON CANDIDATE_ARTIFACT_DIRECTORY
+```
+
+The artifact directory contains the normal `coverage-TARGET` subdirectory and its
+receipt. The command prints a proposal with report/source digests, not a new baseline
+or accepted CI verdict, and does not modify repository files.
+
 Fixtures cover all four collection profiles, failed and partial collections,
 tampering, compiler/exporter mismatches, swapped gaps, Windows junctions, and
 pathname replacement. The primary native matrix runs these fixtures on each OS.
 Passing fixtures is not a substitute for exact-SHA native measurements and actual
 Codecov service validation.
+
+## Nightly branch regression gate
+
+The separate `coverage-branch-policy.json` records the reviewed source inventory,
+per-target branch locations, denominators, baseline JSON digests, and exact nightly
+compiler/exporter identities. Each native target independently requires 100% of its
+measured outcomes. LLVM JSON physical-outcome unions, file/aggregate totals, and
+LCOV branch records must agree. Zero denominators, changed inventories, or new
+uncovered outcomes fail rather than being rounded or merged away.
+
+Producers seal JSON, LCOV, text, provenance, and source manifests. The complete
+branch collector requires all three targets from one SHA, tree, run, and attempt;
+failed producers, tampering, and missing evidence fail closed. Download failures
+still permit a rejected diagnostic summary, never a publishable partial result.
+These branch artifacts are not uploaded to Codecov or mixed with stable coverage.
+
+Primary, tooling, MSRV, and nightly native coverage use explicit OS generations:
+Ubuntu 24.04, Windows Server 2025 with VS 2026, and macOS 26 ARM64. Image revisions
+and Node versions are recorded because hosted images can still receive updates.
+Ordinary compatibility lanes retain their existing runner policy.
+
+Focused mutation validation also exercises the legacy/direct byte-counter guards
+and short drive-root validator, and cancels superseded runs to prioritize current
+evidence. Broad mutation testing remains retained. Its weekly schedule is not active
+for `dev-coverage` while the workflow is absent from the default branch; use the
+existing push/manual triggers until a separately approved default-branch promotion.
+No default-branch scheduler, Codecov publication rule, or branch protection changes
+are implied here.
+
+Nightly push path filters include source, tests, build/toolchain configuration,
+developer tooling, its policy, and evidence scripts. Do not make a path-filtered
+workflow a required merge check without an always-running applicability gate.
+Fixture and local replay validation are not fresh native measurements of an
+unpublished candidate.

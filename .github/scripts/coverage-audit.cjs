@@ -7,7 +7,7 @@ const cp = require('node:child_process');
 
 const NATIVE = ['x86_64-unknown-linux-gnu', 'x86_64-pc-windows-msvc', 'aarch64-apple-darwin'];
 const TARGETS = {
-  primary: NATIVE, msrv: NATIVE, tooling: NATIVE,
+  primary: NATIVE, msrv: NATIVE, tooling: NATIVE, branch: NATIVE,
   extended: ['x86_64-apple-darwin', 'aarch64-unknown-linux-gnu'],
 };
 const METRICS = ['lines', 'regions', 'functions', 'instantiations'];
@@ -173,6 +173,90 @@ function parseLcov(text) {
   requireValue(record === null && lines.size > 0, 'Incomplete or empty LCOV');
   return {lines, summaries, totals: lineSummary(lines)};
 }
+
+function parseBranchLcov(text) {
+  const stripped = [], branches = new Map();
+  let record = null;
+  for (const row of text.split(/\r?\n/)) {
+    if (row.startsWith('SF:')) {
+      requireValue(!record, 'Nested branch LCOV record');
+      record = {file: sourcePath(row.slice(3)), rows: new Map(), found: null, hit: null};
+      requireValue(!branches.has(record.file), 'Duplicate branch LCOV source');
+    }
+    if (row.startsWith('BRDA:')) {
+      const match = /^BRDA:([1-9]\d*),(\d+),(\d+),(-|\d+)$/.exec(row);
+      requireValue(record && match, 'Invalid LCOV branch record');
+      const coordinate = match.slice(1, 4).map(Number);
+      requireValue(coordinate.every(Number.isSafeInteger), 'Invalid LCOV branch coordinate');
+      const key = coordinate.join(':');
+      requireValue(!record.rows.has(key), 'Duplicate LCOV branch coordinate');
+      const hits = match[4] === '-' ? 0n : BigInt(match[4]);
+      record.rows.set(key, hits > 0n);
+      continue;
+    }
+    if (row.startsWith('BRF:') || row.startsWith('BRH:')) {
+      requireValue(record && /^(BRF|BRH):\d+$/.test(row), 'Invalid LCOV branch summary');
+      const field = row.startsWith('BRF:') ? 'found' : 'hit';
+      requireValue(record[field] === null, 'Duplicate LCOV branch summary');
+      record[field] = Number(row.slice(4));
+      continue;
+    }
+    if (row === 'end_of_record') {
+      requireValue(record && Number.isSafeInteger(record.found) && Number.isSafeInteger(record.hit),
+        'Missing LCOV branch summary');
+      const covered = [...record.rows.values()].filter(Boolean).length;
+      requireValue(record.found === record.rows.size && record.hit === covered, 'LCOV branch summary mismatch');
+      branches.set(record.file, {count: record.found, covered});
+      record = null;
+    }
+    stripped.push(row);
+  }
+  requireValue(!record && branches.size > 0, 'Incomplete branch LCOV');
+  return {...parseLcov(stripped.join('\n')), branches};
+}
+function validateBranches(json, parsed, target, policy) {
+  const baseline = policy.targets?.[target];
+  requireValue(policy.schema === 1 && baseline && json.type === 'llvm.coverage.json.export'
+    && json.version === policy.export_version && json.data?.length === 1, 'Invalid branch policy/export identity');
+  const data = json.data[0], total = counter(data.totals?.branches, 'branches');
+  requireValue(data.totals.branches.notcovered === total.count - total.covered
+    && total.covered === total.count, 'Measured branch coverage is below 100%');
+  requireValue(Array.isArray(data.files) && data.files.length > 0, 'Missing branch source records');
+  const seen = new Set(), locations = [];
+  let count = 0, covered = 0;
+  for (const file of data.files) {
+    const name = sourcePath(file.filename), conditions = new Map();
+    requireValue(!seen.has(name) && Array.isArray(file.branches), 'Missing or duplicate branch source');
+    seen.add(name);
+    for (const row of file.branches) {
+      requireValue(Array.isArray(row) && row.length === 9
+        && row.every(v => Number.isSafeInteger(v) && v >= 0)
+        && row.slice(0, 4).every(v => v > 0) && row[8] === 4
+        && (row[2] > row[0] || (row[2] === row[0] && row[3] >= row[1])), 'Invalid LLVM branch identity');
+      const key = JSON.stringify(row.slice(0, 4));
+      if (!conditions.has(key)) conditions.set(key, {range: row.slice(0, 4), yes: false, no: false});
+      const condition = conditions.get(key);
+      condition.yes ||= row[4] > 0;
+      condition.no ||= row[5] > 0;
+    }
+    const outcomes = conditions.size * 2;
+    const hits = [...conditions.values()].reduce((sum, value) => sum + Number(value.yes) + Number(value.no), 0);
+    const summary = file.summary?.branches, lcov = parsed.branches?.get(name);
+    requireValue(summary && summary.count === outcomes && summary.covered === hits
+      && summary.notcovered === outcomes - hits && lcov?.count === outcomes && lcov.covered === hits,
+    'LLVM/LCOV branch outcomes differ: ' + name);
+    requireValue(hits === outcomes, 'Uncovered physical branch outcome: ' + name);
+    for (const condition of conditions.values()) locations.push(JSON.stringify([name, ...condition.range]));
+    count += outcomes; covered += hits;
+  }
+  requireValue(count === total.count && covered === total.covered, 'Branch aggregate/physical outcomes differ');
+  sameList([...seen], [...parsed.lines.keys()], 'Branch LCOV/JSON source sets differ');
+  sameList([...seen], baseline.reported_files, 'Branch source inventory requires review');
+  sameList(locations, baseline.locations.map(location => JSON.stringify(location)), 'Branch location inventory requires review');
+  requireValue(total.count === baseline.outcomes, 'Branch denominator requires review');
+  return {count, covered};
+}
+
 function prefixFor(profile, target) {
   requireValue(TARGETS[profile]?.includes(target), 'Unexpected profile/target');
   return 'coverage-' + (profile === 'primary' ? '' : profile + '-') + target;
@@ -181,7 +265,7 @@ function filesFor(profile, target) {
   const prefix = prefixFor(profile, target);
   const files = [prefix + '.lcov', prefix + '.json', prefix + '.txt',
     prefix + '-provenance.txt', prefix + '-source.sha256'];
-  if (profile !== 'msrv' && profile !== 'tooling') files.push(prefix + '-codecov.json');
+  if (profile === 'primary' || profile === 'extended') files.push(prefix + '-codecov.json');
   if (profile === 'primary' || profile === 'msrv') {
     const family = profile === 'primary' ? 'coverage-' : 'coverage-msrv-';
     for (const kind of ['unit', 'integration']) {
@@ -215,6 +299,16 @@ function checkProvenance(text, expected, profile, target, policy) {
   }
   requireValue(fields.includes('host: ' + target) && fields.includes('release: ' + toolchain)
     && fields.includes('cargo-llvm-cov ' + policy.llvm_cov), 'Compiler or exporter identity mismatch');
+  if (profile === 'branch') {
+    requireValue(fields.includes('commit-hash: ' + policy.compiler_commit)
+      && fields.includes('LLVM version: ' + policy.llvm_version), 'Branch compiler identity mismatch');
+    for (const key of ['runner_label', 'runner_image_os', 'runner_image_version', 'node_version']) {
+      const records = fields.filter(row => row.startsWith(key + '='));
+      requireValue(records.length === 1 && /^[A-Za-z0-9_.-]{1,100}$/.test(records[0].slice(key.length + 1))
+        && records[0] !== key + '=unset', 'Missing runner/runtime identity: ' + key);
+    }
+    requireValue(fields.includes('runner_label=' + policy.targets[target].runner_label), 'Branch runner label mismatch');
+  }
 }
 function seal(root, profile, target, expected) {
   const files = Object.fromEntries(filesFor(profile, target).map(name => [name, digest(readRegular(root, name))]));
@@ -226,6 +320,28 @@ function seal(root, profile, target, expected) {
 function sameList(actual, expected, message) {
   requireValue(JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort()), message);
 }
+
+function readEvidence(directory, profile, target, expected, policy) {
+  const prefix = prefixFor(profile, target), artifact = path.join(directory, prefix);
+  requireValue(!fs.lstatSync(artifact).isSymbolicLink(), 'Linked artifact directory');
+  const receiptBytes = readRegular(artifact, prefix + '-receipt.json');
+  const receipt = JSON.parse(receiptBytes);
+  requireValue(receipt.schema === 1 && receipt.profile === profile && receipt.target === target,
+    'Artifact receipt identity mismatch');
+  for (const key of ['sha', 'tree', 'run']) requireValue(receipt[key] === expected[key], 'Stale/mixed artifact: ' + key);
+  requireValue(receipt.attempt === expected.attempt,
+    'Stale/mixed artifact: attempt. Re-run all jobs; partial reruns cannot reuse earlier producer attempts.');
+  sameList(Object.keys(receipt.files || {}), filesFor(profile, target), 'Incomplete artifact receipt');
+  const evidence = new Map();
+  for (const name of filesFor(profile, target)) {
+    const bytes = readRegular(artifact, name);
+    requireValue(receipt.files[name] === digest(bytes), 'Artifact digest mismatch: ' + name);
+    evidence.set(name, bytes.toString('utf8'));
+  }
+  checkProvenance(evidence.get(prefix + '-provenance.txt'), expected, profile, target, policy);
+  return {prefix, evidence, receipt: digest(receiptBytes)};
+}
+
 function audit(root, directory, profile, expected, policy) {
   requireValue(policy.schema === 1 && TARGETS[profile], 'Unsupported coverage policy/profile');
   const inventory = profile === 'tooling' ? policy.tooling_inventory : policy.source_inventory;
@@ -235,23 +351,7 @@ function audit(root, directory, profile, expected, policy) {
   const failures = [];
   for (const target of TARGETS[profile]) {
     try {
-    const prefix = prefixFor(profile, target), artifact = path.join(directory, prefix);
-    requireValue(!fs.lstatSync(artifact).isSymbolicLink(), 'Linked artifact directory');
-    const receiptBytes = readRegular(artifact, prefix + '-receipt.json');
-    const receipt = JSON.parse(receiptBytes);
-    requireValue(receipt.schema === 1 && receipt.profile === profile && receipt.target === target,
-      'Artifact receipt identity mismatch');
-    for (const key of ['sha', 'tree', 'run']) requireValue(receipt[key] === expected[key], 'Stale/mixed artifact: ' + key);
-    requireValue(receipt.attempt === expected.attempt,
-      'Stale/mixed artifact: attempt. Re-run all jobs; partial reruns cannot reuse earlier producer attempts.');
-    sameList(Object.keys(receipt.files || {}), filesFor(profile, target), 'Incomplete artifact receipt');
-    const evidence = new Map();
-    for (const name of filesFor(profile, target)) {
-      const bytes = readRegular(artifact, name);
-      requireValue(receipt.files[name] === digest(bytes), 'Artifact digest mismatch: ' + name);
-      evidence.set(name, bytes.toString('utf8'));
-    }
-    checkProvenance(evidence.get(prefix + '-provenance.txt'), expected, profile, target, policy);
+    const {prefix, evidence, receipt} = readEvidence(directory, profile, target, expected, policy);
     const manifest = new Map();
     for (const row of evidence.get(prefix + '-source.sha256').trimEnd().split(/\r?\n/)) {
       const match = /^([a-f0-9]{64}) [ *](.+)$/.exec(row);
@@ -260,7 +360,7 @@ function audit(root, directory, profile, expected, policy) {
       requireValue(!manifest.has(file), 'Duplicate source manifest path');
       manifest.set(file, match[1]);
     }
-    const parsed = parseLcov(evidence.get(prefix + '.lcov'));
+    const parsed = (profile === 'branch' ? parseBranchLcov : parseLcov)(evidence.get(prefix + '.lcov'));
     const json = JSON.parse(evidence.get(prefix + '.json'));
     requireValue(json.type === 'llvm.coverage.json.export' && json.data?.length === 1, 'Invalid LLVM JSON envelope');
     const data = json.data[0], totals = {};
@@ -288,6 +388,7 @@ function audit(root, directory, profile, expected, policy) {
         && Object.keys(pilot.coverage).length > 0, 'Empty region-aware pilot');
       for (const file of Object.keys(pilot.coverage)) requireValue(allowed.has(sourcePath(file)), 'Pilot source outside scope');
     }
+    const branches = profile === 'branch' ? validateBranches(json, parsed, target, policy) : null;
     let diagnostics = null;
     if (profile === 'primary' || profile === 'msrv') {
       const family = profile === 'primary' ? 'coverage-' : 'coverage-msrv-';
@@ -330,7 +431,7 @@ function audit(root, directory, profile, expected, policy) {
       };
     }
     platforms.push({target, lines: parsed.totals, llvm: totals, diagnostics, missed_locations: gaps,
-      lcov_summary_differences: parsed.summaries, receipt: digest(receiptBytes)});
+      lcov_summary_differences: parsed.summaries, receipt, ...(branches ? {branches} : {})});
     } catch (error) {
       failures.push({target, message: error.message});
     }
@@ -351,6 +452,15 @@ function audit(root, directory, profile, expected, policy) {
 }
 function formatCount(value) { return value.covered + '/' + value.count; }
 function render(report) {
+  if (report.profile === 'branch') return [
+    '# Coverage evidence: branch', '',
+    'SHA: ' + report.sha + '; Rust ' + report.toolchain + '; run ' + report.run + ', attempt ' + report.attempt + '.', '',
+    '| Target | Measured branch outcomes |', '| --- | ---: |',
+    ...report.platforms.map(p => '| ' + p.target + ' | ' + formatCount(p.branches) + ' |'), '',
+    'Every native target independently requires 100% of its reviewed measured branch outcomes.',
+    'Nightly instrumentation does not measure every Rust construct, MC/DC, or complete instantiation coverage.',
+    'These reports remain separate from stable line gates and Codecov publication.', '',
+  ].join('\n');
   return [
     '# Coverage evidence: ' + report.profile, '',
     'SHA: ' + report.sha + '; Rust ' + report.toolchain + '; run ' + report.run + ', attempt ' + report.attempt + '.',
@@ -400,7 +510,8 @@ function main(args = process.argv.slice(2), root = process.cwd(), env = process.
     requireValue(args.length === 3 && (command === 'seal' || command === 'collect') && Object.hasOwn(TARGETS, profile),
       'Usage: coverage-audit.cjs seal PROFILE TARGET | collect PROFILE ARTIFACT_DIRECTORY');
     const expected = identify(root, env);
-    const policy = JSON.parse(readRegular(root, '.github/coverage-policy.json'));
+    const policy = JSON.parse(readRegular(root, profile === 'branch'
+      ? '.github/coverage-branch-policy.json' : '.github/coverage-policy.json'));
     if (command === 'seal') {
       seal(root, profile, argument, expected);
     } else {
@@ -425,5 +536,6 @@ function main(args = process.argv.slice(2), root = process.cwd(), env = process.
   }
 }
 module.exports = {TARGETS, METRICS, sourcePath, readRegular, counter, ratchet, parseLcov, lineSummary,
-  filesFor, prefixFor, checkProvenance, seal, audit, render, gapLocations, ratchetGaps, renderFailure, writeSummary, main};
+  filesFor, prefixFor, checkProvenance, seal, audit, render, gapLocations, ratchetGaps, renderFailure, writeSummary, main,
+  identity, digest, readEvidence, parseBranchLcov, validateBranches};
 if (require.main === module) process.exitCode = main();

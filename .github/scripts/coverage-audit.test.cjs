@@ -50,18 +50,24 @@ function fixture(t, profile = 'primary') {
   }
   const expected = {sha: 'a'.repeat(40), tree: 'b'.repeat(40), run: '123', attempt: '1', sources: ['src/lib.rs', ...(profile === 'tooling' ? [sourceFile] : [])]};
   const counts = {count: 1, covered: 1};
+  const branch = profile === 'branch';
+  const toolchain = profile === 'msrv' ? '1.88.0' : branch ? '1.99.0-nightly' : '1.98.1';
   const totals = Object.fromEntries(audit.METRICS.map(metric => [metric, counts]));
-  const policy = {schema: 1, toolchain: '1.98.1', llvm_cov: '0.8.7', baseline_sha: 'c'.repeat(40),
+  if (branch) totals.branches = {count: 2, covered: 2, notcovered: 0};
+  const policy = {schema: 1, toolchain: branch ? toolchain : '1.98.1',
+    compiler_commit: 'd'.repeat(40), llvm_version: '23.1.0', export_version: '3.1.0',
+    llvm_cov: '0.8.7', baseline_sha: 'c'.repeat(40),
     source_inventory: ['src/lib.rs'], tooling_inventory: profile === 'tooling' ? [sourceFile] : [], targets: {}};
   const data = {type: 'llvm.coverage.json.export', version: '3.1.0', data: [{
-    totals, files: [{filename: sourceFile}], functions: [{name: 'covered', filenames: [sourceFile], count: 1, regions: [[1, 1, 1, 20, 1, 0, 0, 0]]}],
+    totals, files: [{filename: sourceFile, ...(branch ? {
+      branches: [[1, 4, 1, 8, 1, 1, 0, 0, 4]], summary: {branches: totals.branches},
+    } : {})}], functions: [{name: 'covered', filenames: [sourceFile], count: 1, regions: [[1, 1, 1, 20, 1, 0, 0, 0]]}],
   }]};
   const diagnostics = target => ({schema_version: 4, target,
     intended_integration_definitions: counts, profiles: [{
       profile: 'combined', json_entries: counts, source_definitions: counts,
       llvm_instantiations: counts, definitions: [{covered_entries: 1}],
     }]});
-  const toolchain = profile === 'msrv' ? '1.88.0' : '1.98.1';
   const directory = path.join(root, 'inputs');
   fs.mkdirSync(directory);
   for (const target of audit.TARGETS[profile]) {
@@ -70,10 +76,15 @@ function fixture(t, profile = 'primary') {
     policy.targets[target] = {reported_files: ['src/lib.rs'], llvm_totals: totals,
       json_entries: counts, source_definitions: counts, intended_integration_definitions: counts, reviewed_gaps: [],
       gap_provenance: {toolchain: '1.98.1', llvm_cov: '0.8.7', export_version: '3.1.0'}};
+    if (branch) Object.assign(policy.targets[target], {
+      outcomes: 2, locations: [[sourceFile, 1, 4, 1, 8]], runner_label: 'fixture',
+    });
     const provenance = [
       'requested_sha=' + expected.sha, 'checked_out_sha=' + expected.sha, 'tree=' + expected.tree,
       'run_id=123', 'run_attempt=1', 'target=' + target, 'toolchain=' + toolchain, 'CARGO_INCREMENTAL=0',
       'host: ' + target, 'release: ' + toolchain, 'cargo-llvm-cov 0.8.7',
+      ...(branch ? ['commit-hash: ' + policy.compiler_commit, 'LLVM version: ' + policy.llvm_version,
+        'runner_label=fixture', 'runner_image_os=fixture', 'runner_image_version=1.0', 'node_version=v26.5.0'] : []),
     ].join('\n');
     for (const name of audit.filesFor(profile, target)) {
       let content = 'diagnostic\n';
@@ -83,6 +94,9 @@ function fixture(t, profile = 'primary') {
       else if (name.endsWith('-codecov.json')) content = JSON.stringify({coverage: {[sourceFile]: {'1': 1}}});
       else if (name.includes('diagnostics-')) content = JSON.stringify(diagnostics(target));
       else if (name.endsWith('.json')) content = JSON.stringify(data);
+      if (branch && name.endsWith('.lcov')) {
+        content = content.replace('LF:', 'BRDA:1,0,0,1\nBRDA:1,0,1,1\nBRF:2\nBRH:2\nLF:');
+      }
       fs.writeFileSync(path.join(folder, name), content);
     }
     audit.seal(folder, profile, target, expected);
@@ -167,7 +181,7 @@ for (const profile of Object.keys(audit.TARGETS)) {
     const f = fixture(t, profile), report = f.run();
     assert.equal(report.profile, profile);
     assert.equal(report.status, 'complete');
-    assert.equal(report.toolchain, profile === 'msrv' ? '1.88.0' : '1.98.1');
+    assert.equal(report.toolchain, profile === 'msrv' ? '1.88.0' : profile === 'branch' ? '1.99.0-nightly' : '1.98.1');
     assert.equal(report.platforms.length, audit.TARGETS[profile].length);
     assert.equal(report.platforms.every(p => p.missed_locations.length === 0), true);
   });
@@ -252,7 +266,8 @@ test('Windows junction artifact roots are rejected', {skip: process.platform !==
 });
 function outputs(f) {
   fs.mkdirSync(path.join(f.root, '.github'));
-  fs.writeFileSync(path.join(f.root, '.github/coverage-policy.json'), JSON.stringify(f.policy));
+  fs.writeFileSync(path.join(f.root, f.profile === 'branch'
+    ? '.github/coverage-branch-policy.json' : '.github/coverage-policy.json'), JSON.stringify(f.policy));
   return {RUNNER_TEMP: f.root, GITHUB_STEP_SUMMARY: path.join(f.root, 'step-summary.md'),
     GITHUB_OUTPUT: path.join(f.root, 'step-output.txt'), GITHUB_SHA: f.expected.sha,
     GITHUB_RUN_ID: f.expected.run, GITHUB_RUN_ATTEMPT: f.expected.attempt, COVERAGE_JOB_RESULT: 'success'};
@@ -289,4 +304,62 @@ test('failure summaries escape artifact-controlled markup', () => {
   const text = audit.renderFailure({failures: [{message: '<script>bad</script>'}]});
   assert.ok(!text.includes('<script>'));
   assert.match(text, /&lt;script&gt;/);
+});
+
+test('branch gate retains its independent denominator and never exports a Codecov pilot', t => {
+  const f = fixture(t, 'branch'), report = f.run();
+  assert.ok(report.platforms.every(platform => platform.branches.count === 2 && platform.branches.covered === 2));
+  assert.ok(!audit.filesFor('branch', audit.TARGETS.branch[0]).some(file => file.includes('codecov')));
+  assert.match(audit.render(report), /not measure every Rust construct/);
+});
+for (const fault of ['miss', 'forged full total', 'zero denominator', 'coordinate drift', 'denominator drift',
+  'duplicate source', 'malformed region', 'lcov mismatch', 'wrong nightly', 'missing runner', 'wrong runner']) {
+  test('branch gate rejects ' + fault, t => {
+    const f = fixture(t, 'branch'), data = structuredClone(f.data), target = audit.TARGETS.branch[0];
+    if (fault === 'miss') { data.data[0].totals.branches.covered = 1; data.data[0].totals.branches.notcovered = 1; }
+    if (fault === 'forged full total') data.data[0].files[0].branches[0][4] = 0;
+    if (fault === 'zero denominator') data.data[0].totals.branches = {count: 0, covered: 0, notcovered: 0};
+    if (fault === 'coordinate drift') data.data[0].files[0].branches[0][1]++;
+    if (fault === 'denominator drift') f.policy.targets[target].outcomes = 4;
+    if (fault === 'duplicate source') data.data[0].files.push(data.data[0].files[0]);
+    if (fault === 'malformed region') data.data[0].files[0].branches[0][8] = 5;
+    fs.writeFileSync(path.join(f.folder, f.prefix + '.json'), JSON.stringify(data));
+    if (fault === 'lcov mismatch') {
+      const file = path.join(f.folder, f.prefix + '.lcov');
+      fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('BRH:2', 'BRH:1'));
+    }
+    if (fault === 'wrong nightly' || fault === 'missing runner' || fault === 'wrong runner') {
+      const file = path.join(f.folder, f.prefix + '-provenance.txt');
+      let text = fs.readFileSync(file, 'utf8');
+      if (fault === 'wrong nightly') text = text.replace('commit-hash: ' + f.policy.compiler_commit, 'commit-hash: ' + 'e'.repeat(40));
+      if (fault === 'missing runner') text = text.replace('node_version=v26.5.0', 'node_version=unset');
+      if (fault === 'wrong runner') text = text.replace('runner_label=fixture', 'runner_label=different');
+      fs.writeFileSync(file, text);
+    }
+    f.reseal();
+    assert.throws(f.run);
+  });
+}
+test('branch rows from generic instances are unioned without hiding a missing physical outcome', t => {
+  const f = fixture(t, 'branch'), data = structuredClone(f.data);
+  data.data[0].files[0].branches = [[1, 4, 1, 8, 1, 0, 0, 0, 4], [1, 4, 1, 8, 0, 1, 0, 0, 4]];
+  fs.writeFileSync(path.join(f.folder, f.prefix + '.json'), JSON.stringify(data));
+  f.reseal();
+  assert.deepEqual(f.run().platforms[0].branches, {count: 2, covered: 2});
+});
+test('branch LCOV rejects duplicate records and missing outcome summaries', () => {
+  const text = lcov().replace('LF:', 'BRDA:1,0,0,1\nBRDA:1,0,1,1\nBRF:2\nBRH:2\nLF:');
+  assert.throws(() => audit.parseBranchLcov(text.replace('BRF:', 'BRDA:1,0,0,1\nBRF:')));
+  assert.throws(() => audit.parseBranchLcov(text.replace('BRH:2\n', '')));
+  assert.throws(() => audit.parseBranchLcov(text.replace('BRDA:1,0,0,1', 'BRDA:1,0,0,-')));
+});
+test('standalone branch summary applies the same strict gate', t => {
+  const f = fixture(t, 'branch');
+  fs.mkdirSync(path.join(f.folder, '.github'));
+  fs.writeFileSync(path.join(f.folder, '.github/coverage-branch-policy.json'), JSON.stringify(f.policy));
+  const env = {COVERAGE_TARGET: audit.TARGETS.branch[0], GITHUB_SHA: f.expected.sha,
+    GITHUB_STEP_SUMMARY: path.join(f.root, 'branch-summary.md')};
+  require('./coverage-branch-summary.cjs').main(f.folder, env);
+  assert.match(fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /2\/2 \(100%\)/);
+  assert.throws(() => require('./coverage-branch-summary.cjs').main(f.folder, {...env, COVERAGE_TARGET: '../outside'}));
 });

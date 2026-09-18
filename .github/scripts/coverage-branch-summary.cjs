@@ -1,29 +1,26 @@
 'use strict';
 
 const fs = require('node:fs');
-const file = 'coverage-branch-' + process.env.COVERAGE_TARGET + '.json';
-const report = JSON.parse(fs.readFileSync(file, 'utf8'));
-if (report.type !== 'llvm.coverage.json.export' || report.data.length !== 1) {
-  throw new Error('Unexpected LLVM export schema');
+const audit = require('./coverage-audit.cjs');
+
+function main(root = process.cwd(), env = process.env) {
+  const target = env.COVERAGE_TARGET;
+  const prefix = audit.prefixFor('branch', target);
+  const policy = JSON.parse(audit.readRegular(root, '.github/coverage-branch-policy.json'));
+  const json = JSON.parse(audit.readRegular(root, prefix + '.json'));
+  const parsed = audit.parseBranchLcov(audit.readRegular(root, prefix + '.lcov').toString('utf8'));
+  const branches = audit.validateBranches(json, parsed, target, policy);
+  if (!/^[a-f0-9]{40}$/.test(env.GITHUB_SHA || '') || !env.GITHUB_STEP_SUMMARY) {
+    throw new Error('Expected CI revision and summary path');
+  }
+  fs.appendFileSync(env.GITHUB_STEP_SUMMARY, [
+    '# Native branch coverage gate', '',
+    '- Commit: ' + env.GITHUB_SHA,
+    '- Target: ' + target,
+    '- Branch outcomes: ' + branches.covered + '/' + branches.count + ' (100%)', '',
+    'Complete cross-platform evidence requires the separate collector to pass.',
+    'Nightly measured branches are not MC/DC or complete compiler-instantiation coverage.', '',
+  ].join('\n'));
 }
-const branches = report.data[0].totals.branches;
-if (!branches || !Number.isSafeInteger(branches.count) ||
-    !Number.isSafeInteger(branches.covered) || branches.count <= 0 ||
-    branches.covered < 0 || branches.covered > branches.count) {
-  throw new Error('Missing or invalid branch denominator');
-}
-const percent = (100 * branches.covered / branches.count).toFixed(2);
-const lines = [
-  '# Diagnostic branch baseline',
-  '',
-  '- Commit: ' + process.env.GITHUB_SHA,
-  '- Target: ' + process.env.COVERAGE_TARGET,
-  '- Compiler: nightly-2026-08-14 / LLVM 23.1.0',
-  '- Branch outcomes: ' + branches.covered + '/' + branches.count + ' (' + percent + '%)',
-  '- Uncovered outcomes: ' + (branches.count - branches.covered),
-  '',
-  'Informational only. Compiler instrumentation limitations remain applicable.',
-  'This report is separate from stable coverage, MC/DC, and Codecov publication.',
-  ''
-];
-fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, lines.join('\n'));
+module.exports = {main};
+if (require.main === module) main();
