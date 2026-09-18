@@ -290,7 +290,7 @@ jobs:
 
 
   codecov_validation:
-    name: Validate dev-coverage Codecov ingestion
+    name: Validate dev-coverage region-aware Codecov ingestion
     needs: [coverage, coverage_complete]
     if: github.event_name == 'workflow_dispatch' && github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage'
     runs-on: ubuntu-latest
@@ -327,52 +327,55 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() && steps.audit.outputs.report_directory != '' }}
         with:
-          name: codecov-validation-summary-attempt-${{ github.run_attempt }}
+          name: codecov-region-pilot-summary-attempt-${{ github.run_attempt }}
           path: ${{ steps.audit.outputs.report_directory }}
           if-no-files-found: error
           retention-days: 14
-      - name: Upload validation-only linux line coverage
+      - name: Upload validation-only linux region-aware coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           version: v11.3.1
-          files: coverage/coverage-x86_64-unknown-linux-gnu/coverage-x86_64-unknown-linux-gnu.lcov
+          files: coverage/coverage-x86_64-unknown-linux-gnu/coverage-x86_64-unknown-linux-gnu-codecov.json
           disable_search: true
+          disable_file_fixes: true
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
           override_branch: dev-coverage
           override_commit: ${{ github.sha }}
-          flags: validation-linux
-          name: dev-coverage-linux-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Upload validation-only windows line coverage
+          flags: region-pilot-linux
+          name: dev-coverage-regions-linux-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload validation-only windows region-aware coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           version: v11.3.1
-          files: coverage/coverage-x86_64-pc-windows-msvc/coverage-x86_64-pc-windows-msvc.lcov
+          files: coverage/coverage-x86_64-pc-windows-msvc/coverage-x86_64-pc-windows-msvc-codecov.json
           disable_search: true
+          disable_file_fixes: true
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
           override_branch: dev-coverage
           override_commit: ${{ github.sha }}
-          flags: validation-windows
-          name: dev-coverage-windows-${{ github.run_id }}-${{ github.run_attempt }}
-      - name: Upload validation-only macos line coverage
+          flags: region-pilot-windows
+          name: dev-coverage-regions-windows-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload validation-only macos region-aware coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           version: v11.3.1
-          files: coverage/coverage-aarch64-apple-darwin/coverage-aarch64-apple-darwin.lcov
+          files: coverage/coverage-aarch64-apple-darwin/coverage-aarch64-apple-darwin-codecov.json
           disable_search: true
+          disable_file_fixes: true
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
           override_branch: dev-coverage
           override_commit: ${{ github.sha }}
-          flags: validation-macos
-          name: dev-coverage-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          flags: region-pilot-macos
+          name: dev-coverage-regions-macos-${{ github.run_id }}-${{ github.run_attempt }}
 
   coverage_tooling:
     name: Tooling coverage / ${{ matrix.target }}

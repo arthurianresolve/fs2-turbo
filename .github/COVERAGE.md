@@ -35,16 +35,22 @@ MC/DC, region, or compiler-instantiation coverage.
 - Supplemental jobs run for dev-coverage pushes and CI manual/monthly canary runs.
   GitHub schedules run from the default branch; no dev-coverage schedule is implied
   before these changes are approved and promoted there.
-- The region-aware Codecov JSON export is retained as an artifact-only pilot.
-  Its partial-line presentation is not a replacement for LLVM region totals and is
-  never uploaded together with LCOV into the published headline.
+- The region-aware Codecov JSON export is retained and tested by a manual-only
+  dev-coverage ingestion pilot. Fresh native reports from the pilot commit are
+  uploaded with region-pilot-linux, region-pilot-windows, and region-pilot-macos
+  flags, with automatic file fixes disabled to preserve the exported records.
+  This commit receives JSON only, not LCOV; the earlier LCOV baseline remains on
+  its original commit. Flags alone would not isolate the combined commit score.
+  Codecov processing and per-platform totals must be checked after upload.
+  Its partial-line presentation is not a replacement for LLVM region totals,
+  branch or MC/DC measurement, or compiler-instantiation coverage.
 - Existing broad and focused mutation workflows are retained. Unviable mutations
   are not killed mutants; timeouts and missing outcomes are not successful evidence.
 - Nightly branch/MC/DC collection is optional future work, not enabled by this change.
 
 ## Publication
 
-Codecov publication remains restricted to trusted release-branch events on 1.0.0.
+Release-headline Codecov publication remains restricted to trusted events on 1.0.0.
 Three separate uploads carry primary-linux, primary-windows, and primary-macos flags.
 The combined and per-platform project checks, plus measured patch checks, require
 100% with zero tolerance. Carryforward is disabled and all three uploads are required.
