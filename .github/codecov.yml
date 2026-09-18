@@ -3,8 +3,8 @@ codecov:
   strict_yaml_branch: "1.0.0"
   require_ci_to_pass: true
   notify:
-    # One upload contains all three native coverage reports from the same run.
-    after_n_builds: 1
+    # All three exact-SHA primary platform uploads must arrive.
+    after_n_builds: 3
     wait_for_ci: true
 
 coverage:
@@ -13,20 +13,55 @@ coverage:
   status:
     project:
       default:
-        target: auto
+        target: 100%
         threshold: 0
+        flags: [primary-linux, primary-windows, primary-macos]
         if_not_found: failure
         if_ci_failed: error
         branches:
           - "1.0.0"
+      linux:
+        target: 100%
+        threshold: 0
+        flags: [primary-linux]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      windows:
+        target: 100%
+        threshold: 0
+        flags: [primary-windows]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      macos:
+        target: 100%
+        threshold: 0
+        flags: [primary-macos]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
     patch:
       default:
-        target: auto
+        target: 100%
         threshold: 0
+        flags: [primary-linux, primary-windows, primary-macos]
         if_not_found: failure
         if_ci_failed: error
         branches:
           - "1.0.0"
+
+flags:
+  primary-linux:
+    carryforward: false
+  primary-windows:
+    carryforward: false
+  primary-macos:
+    carryforward: false
+
+parsers:
+  lcov:
+    partials_as_hits: false
 
 # Publication is release-branch-only; do not post incomplete PR commentary.
 comment: false
