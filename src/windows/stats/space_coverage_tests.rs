@@ -75,3 +75,26 @@ fn handle_projection_accepts_zero_equal_and_maximum_available_space() {
         );
     }
 }
+
+#[test]
+fn direct_space_accepts_inclusive_available_bounds() {
+    for (caller_available, caller_total, actual_free) in [
+        (0, 0, 0),
+        (8, 8, 9),
+        (8, 9, 8),
+        (8, 8, 8),
+        (u64::MAX, u64::MAX, u64::MAX),
+    ] {
+        for (kind, expected) in [
+            (SpaceKind::Free, DirectSpace::Hit(actual_free)),
+            (SpaceKind::Available, DirectSpace::Hit(caller_available)),
+            (SpaceKind::Total, DirectSpace::Unavailable),
+            (SpaceKind::AllocationGranularity, DirectSpace::Unavailable),
+        ] {
+            assert_eq!(
+                direct_space_result(1, caller_available, caller_total, actual_free, kind),
+                expected
+            );
+        }
+    }
+}

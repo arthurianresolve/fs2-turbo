@@ -218,3 +218,24 @@ fn legacy_byte_space_rejects_available_above_physical_free() {
         std::io::ErrorKind::InvalidData
     );
 }
+
+#[test]
+fn legacy_byte_space_accepts_inclusive_available_bounds() {
+    for (caller_available, caller_total, actual_free) in [
+        (0, 0, 0),
+        (8, 8, 9),
+        (8, 9, 8),
+        (8, 8, 8),
+        (u64::MAX, u64::MAX, u64::MAX),
+    ] {
+        let bytes = byte_space_result(1, caller_available, caller_total, actual_free).unwrap();
+        assert_eq!(
+            (
+                bytes.caller_available,
+                bytes.caller_total,
+                bytes.actual_free
+            ),
+            (caller_available, caller_total, actual_free)
+        );
+    }
+}
