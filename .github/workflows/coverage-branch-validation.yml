@@ -1,0 +1,101 @@
+name: Nightly branch coverage baseline
+
+"on":
+  push:
+    branches: [dev-coverage]
+    paths:
+      - .github/workflows/coverage-branch-validation.yml
+      - .github/scripts/coverage-provenance.sh
+      - .github/scripts/coverage-branch-summary.cjs
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - tests/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: branch-baseline-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  branch_coverage:
+    name: Branch baseline / ${{ matrix.target }}
+    if: github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: nightly-2026-08-14
+      COVERAGE_TOOLCHAIN: "1.99.0-nightly"
+      COVERAGE_TARGET: ${{ matrix.target }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-branch-${{ matrix.target }}
+      FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: nightly-2026-08-14
+          components: llvm-tools-preview
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - name: Bind the diagnostic compiler and exact source
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc -vV | tr -d '\r' | grep -Fx 'commit-hash: ba28ff76f353a722f31c4f3dd2ac4e437d36411b'
+          rustc -vV | tr -d '\r' | grep -Fx 'LLVM version: 23.1.0'
+          bash .github/scripts/coverage-provenance.sh record "coverage-branch-${COVERAGE_TARGET}"
+      - name: Measure native library branch outcomes
+        run: >-
+          cargo llvm-cov --branch --package fs2-turbo --lib --tests
+          --target "${{ matrix.target }}" --locked --remap-path-prefix
+          --json --output-path "coverage-branch-${{ matrix.target }}.json"
+          -- --test-threads=1
+      - name: Export raw LCOV branch records without uploading to Codecov
+        run: >-
+          cargo llvm-cov report --branch --package fs2-turbo
+          --target "${{ matrix.target }}" --locked --remap-path-prefix
+          --lcov --output-path "coverage-branch-${{ matrix.target }}.lcov"
+      - name: Export branch and instantiation detail
+        env:
+          LLVM_COV_FLAGS: --show-branches=count
+        run: >-
+          cargo llvm-cov report --branch --package fs2-turbo
+          --target "${{ matrix.target }}" --locked --remap-path-prefix
+          --text --show-instantiations --output-path "coverage-branch-${{ matrix.target }}.txt"
+      - name: Require real branch instrumentation and summarize the baseline
+        shell: bash
+        run: |
+          node .github/scripts/coverage-branch-summary.cjs
+      - name: Verify source identity after measurement
+        if: always()
+        shell: bash
+        run: bash .github/scripts/coverage-provenance.sh verify "coverage-branch-${COVERAGE_TARGET}"
+      - name: Retain branch evidence and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: branch-coverage-${{ matrix.target }}-attempt-${{ github.run_attempt }}
+          path: |
+            coverage-branch-${{ matrix.target }}.json
+            coverage-branch-${{ matrix.target }}.lcov
+            coverage-branch-${{ matrix.target }}.txt
+            coverage-branch-${{ matrix.target }}-provenance.txt
+            coverage-branch-${{ matrix.target }}-source.sha256
+          if-no-files-found: error
+          retention-days: 14
