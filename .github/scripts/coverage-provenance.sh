@@ -46,6 +46,9 @@ case "$mode" in
       printf 'CARGO_LLVM_COV_TARGET_DIR=%s\n' "${CARGO_LLVM_COV_TARGET_DIR:-unset}"
       printf 'CARGO_PROFILE_DEV_DEBUG=%s\n' "${CARGO_PROFILE_DEV_DEBUG:-default}"
       printf 'CARGO_PROFILE_TEST_DEBUG=%s\n' "${CARGO_PROFILE_TEST_DEBUG:-default}"
+      printf 'runner_label=%s\n' "${COVERAGE_RUNNER_LABEL:-unset}"
+      printf 'runner_image_os=%s\nrunner_image_version=%s\n' "${ImageOS:-unset}" "${ImageVersion:-unset}"
+      printf 'node_version=%s\n' "$(node --version)"
       printf '%s\n' "$compiler"
       cargo --version --locked
       cargo llvm-cov --version --locked
