@@ -161,8 +161,16 @@ existing push/manual triggers until a separately approved default-branch promoti
 No default-branch scheduler, Codecov publication rule, or branch protection changes
 are implied here.
 
-Nightly push path filters include source, tests, build/toolchain configuration,
-developer tooling, its policy, and evidence scripts. Do not make a path-filtered
-workflow a required merge check without an always-running applicability gate.
+MSRV and nightly coverage run on pushes and pull requests targeting `dev-coverage`,
+`dev`, and `1.0.0`, and on manual dispatches for those branches. Neither workflow
+uses path filters, so documentation-only changes still receive coverage checks.
+The genuine Rust 1.88.0 jobs retain the required `Coverage / <target> / Rust 1.88.0`
+check names; primary Rust 1.98.1 coverage remains separately identified.
+
+Tooling and supplemental coverage use the same push and pull-request branch scope
+while retaining their manual and scheduled runs. Collectors use their producers'
+event eligibility with `always()`, so an unexpectedly skipped producer still
+reaches evidence auditing rather than silently skipping the collector. These
+workflow changes do not modify branch protections or Codecov publication rules.
 Fixture and local replay validation are not fresh native measurements of an
 unpublished candidate.

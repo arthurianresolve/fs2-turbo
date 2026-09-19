@@ -2,8 +2,9 @@ name: MSRV coverage evidence
 
 "on":
   push:
-    branches:
-      - dev-coverage
+    branches: [dev-coverage, dev, "1.0.0"]
+  pull_request:
+    branches: [dev-coverage, dev, "1.0.0"]
   workflow_dispatch:
 
 permissions:
@@ -15,8 +16,11 @@ concurrency:
 
 jobs:
   coverage-msrv:
-    name: Rust 1.88.0 / ${{ matrix.target }}
-    if: github.repository == 'arthurianresolve/fs2-turbo'
+    name: Coverage / ${{ matrix.target }} / Rust 1.88.0
+    if: >-
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
+      contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref || github.ref_name)
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
     env:
@@ -110,7 +114,11 @@ jobs:
   complete-msrv-evidence:
     name: Complete MSRV coverage evidence
     needs: coverage-msrv
-    if: always()
+    if: >-
+      always() &&
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
+      contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref || github.ref_name)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

@@ -169,12 +169,18 @@ test('a receipt is never silently overwritten', t => {
   const f = fixture(t);
   assert.throws(() => audit.seal(f.folder, 'primary', audit.TARGETS.primary[0], f.expected));
 });
-test('symlinked artifact roots are rejected', {skip: process.platform === 'win32'}, t => {
-  const f = fixture(t);
-  fs.renameSync(f.folder, f.folder + '-real');
-  fs.symlinkSync(f.folder + '-real', f.folder, 'dir');
-  assert.throws(f.run, /Linked artifact/);
-});
+for (const [label, type] of [
+  ['directory symlink', 'dir'],
+  ...(process.platform === 'win32' ? [['Windows junction', 'junction']] : []),
+]) {
+  test(label + ' artifact roots are rejected', t => {
+    const f = fixture(t);
+    fs.renameSync(f.folder, f.folder + '-real');
+    fs.symlinkSync(f.folder + '-real', f.folder, type);
+    assert.ok(fs.lstatSync(f.folder).isSymbolicLink());
+    assert.throws(f.run, /Linked artifact/);
+  });
+}
 
 for (const profile of Object.keys(audit.TARGETS)) {
   test(profile + ': complete fixture collection preserves its own profile', t => {
@@ -257,12 +263,6 @@ test('path replacement during reading is rejected', t => {
     return bytes;
   });
   assert.throws(() => audit.readRegular(f.folder, f.prefix + '.txt'), /replaced while reading/);
-});
-test('Windows junction artifact roots are rejected', {skip: process.platform !== 'win32'}, t => {
-  const f = fixture(t);
-  fs.renameSync(f.folder, f.folder + '-real');
-  fs.symlinkSync(f.folder + '-real', f.folder, 'junction');
-  assert.throws(f.run, /Linked artifact/);
 });
 function outputs(f) {
   fs.mkdirSync(path.join(f.root, '.github'));

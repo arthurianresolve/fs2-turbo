@@ -380,7 +380,12 @@ jobs:
   coverage_tooling:
     name: Tooling coverage / ${{ matrix.target }}
     needs: support-matrix
-    if: github.ref == 'refs/heads/dev-coverage' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -433,7 +438,15 @@ jobs:
   tooling_coverage_complete:
     name: Complete tooling coverage evidence
     needs: coverage_tooling
-    if: always() && needs.coverage_tooling.result != 'skipped'
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'schedule' ||
+        contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+        (github.event_name == 'pull_request' &&
+         contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -472,7 +485,12 @@ jobs:
   coverage_extended:
     name: Supplemental coverage / ${{ matrix.target }}
     needs: support-matrix
-    if: github.ref == 'refs/heads/dev-coverage' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'schedule' ||
+      contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+      (github.event_name == 'pull_request' &&
+       contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -526,7 +544,15 @@ jobs:
   extended_coverage_complete:
     name: Complete supplemental coverage evidence
     needs: coverage_extended
-    if: always() && needs.coverage_extended.result != 'skipped'
+    if: >-
+      always() &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        github.event_name == 'schedule' ||
+        contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+        (github.event_name == 'pull_request' &&
+         contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
