@@ -8,6 +8,9 @@ on:
       - tests/**
       - Cargo.toml
       - Cargo.lock
+      - build.rs
+      - rust-toolchain.toml
+      - .cargo/**
       - tools/fs2-dev/**
       - .github/scripts/coverage-mutation-summary.cjs
       - .github/workflows/coverage-mutation-validation.yml
@@ -18,7 +21,7 @@ permissions:
 
 concurrency:
   group: coverage-mutation-validation-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   focused-mutations:
@@ -36,7 +39,7 @@ jobs:
             exclude: '^$'
           - platform: Windows
             os: windows-2025
-            scope: '\b(io_error_from_hresult|hresult_from_win32|modern_statvfs_unavailable|space_after_exact_root|exact_root_value|is_volume_resolution_error|checked_disk_space|counters_from_disk_space_information)\b'
+            scope: '\b(io_error_from_hresult|hresult_from_win32|modern_statvfs_unavailable|space_after_exact_root|exact_root_value|is_volume_resolution_error|checked_disk_space|counters_from_disk_space_information|byte_space_result|direct_space_result|appears_to_be_drive_root)\b'
             # The low 16-bit error and 0x8007_0000 have disjoint bits: OR equals XOR.
             # The preflight binds this exception to the exact expression and location.
             exclude: '^src/windows/stats/modern\.rs:101:23: replace \| with \^ in hresult_from_win32$'

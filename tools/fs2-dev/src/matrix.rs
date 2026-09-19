@@ -44,6 +44,15 @@ enum Runner {
 }
 
 impl Runner {
+    const fn coverage_as_str(self) -> &'static str {
+        match self {
+            Self::MacOsIntel => "macos-15-intel",
+            Self::MacOs => "macos-26",
+            Self::Ubuntu => "ubuntu-24.04",
+            Self::Windows => "windows-2025-vs2026",
+        }
+    }
+
     const fn as_str(self) -> &'static str {
         match self {
             Self::MacOsIntel => "macos-15-intel",
@@ -364,7 +373,7 @@ fn matrices(registry: &SupportRegistry) -> BTreeMap<String, Matrix> {
                 .filter_map(|entry| {
                     let ci = entry.ci.as_ref()?;
                     ci.coverage.then(|| MatrixEntry {
-                        os: ci.runner.as_str().to_owned(),
+                        os: ci.runner.coverage_as_str().to_owned(),
                         target: entry.target.clone(),
                         toolchain: registry.coverage_toolchain.clone(),
                     })
