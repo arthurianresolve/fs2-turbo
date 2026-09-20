@@ -35,6 +35,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Check workspace
         run: cargo check --workspace --all-targets --locked
+      - name: Fetch locked compatibility dependencies for offline tests
+        run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
       - name: Test workspace
         run: cargo test --workspace --locked
       - name: Run strict Clippy

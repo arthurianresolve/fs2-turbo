@@ -6,6 +6,7 @@ mod process;
 use std::error::Error;
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(not(test))]
 use std::process::ExitCode;
 
 use clap::{Arg, Command};
@@ -13,6 +14,8 @@ use clap::{Arg, Command};
 type DynError = Box<dyn Error + Send + Sync>;
 type Result<T> = std::result::Result<T, DynError>;
 
+// The real CLI is exercised by integration tests; libtest supplies its own entrypoint.
+#[cfg(not(test))]
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
@@ -23,8 +26,13 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(not(test))]
 fn run() -> Result<()> {
-    let matches = Command::new("fs2-dev")
+    dispatch(&command().get_matches())
+}
+
+fn command() -> Command {
+    Command::new("fs2-dev")
         .about("Repository validation tooling for fs2")
         .subcommand_required(true)
         .subcommand(
@@ -84,8 +92,9 @@ fn run() -> Result<()> {
                 ),
         )
         .subcommand(Command::new("compatibility").about("Validate the v0.4 API contract"))
-        .get_matches();
+}
 
+fn dispatch(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("matrix", arguments)) => {
             let output = arguments
@@ -153,6 +162,76 @@ fn invalid_data(message: impl Into<String>) -> DynError {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn dispatch_rejects_matches_that_bypass_the_command_contract() {
+        let matches = clap::Command::new("empty")
+            .try_get_matches_from(["empty"])
+            .unwrap();
+        let failure =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::dispatch(&matches)));
+        assert!(failure.is_err());
+    }
+
+    #[test]
+    fn command_parses_every_mode_and_matrix_output() {
+        for mode in ["matrix", "compatibility"] {
+            let matches = super::command()
+                .try_get_matches_from(["fs2-dev", mode])
+                .unwrap();
+            assert_eq!(matches.subcommand_name(), Some(mode));
+        }
+        let matches = super::command()
+            .try_get_matches_from(["fs2-dev", "matrix", "--github-output", "output with spaces"])
+            .unwrap();
+        assert_eq!(
+            matches
+                .subcommand_matches("matrix")
+                .unwrap()
+                .get_one::<String>("github-output")
+                .unwrap(),
+            "output with spaces"
+        );
+    }
+
+    #[test]
+    fn coverage_command_requires_each_evidence_argument() {
+        let arguments = [
+            "fs2-dev",
+            "coverage",
+            "--target",
+            "x86_64-unknown-linux-gnu",
+            "--json",
+            "combined.json",
+            "--lcov",
+            "coverage.lcov",
+            "--unit-json",
+            "unit.json",
+            "--integration-json",
+            "integration.json",
+            "--diagnostics-json",
+            "diagnostics.json",
+        ];
+        let matches = super::command().try_get_matches_from(arguments).unwrap();
+        assert_eq!(matches.subcommand_name(), Some("coverage"));
+        for omitted in (2..arguments.len()).step_by(2) {
+            let omitted_argument = arguments[omitted];
+            let incomplete = arguments
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| *index != omitted && *index != omitted + 1)
+                .map(|(_, argument)| *argument);
+            let error = super::command()
+                .try_get_matches_from(incomplete)
+                .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::MissingRequiredArgument,
+                "{omitted_argument}"
+            );
+        }
+    }
+
     #[test]
     fn lower_hex_preserves_leading_zeroes() {
         assert_eq!(super::lower_hex([0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
