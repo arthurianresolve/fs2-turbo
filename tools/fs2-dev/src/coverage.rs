@@ -277,8 +277,16 @@ struct DefinitionGroupState {
 struct CoverageDiagnosticsReport<'a> {
     schema_version: u32,
     target: &'a str,
+    instantiation_policy: InstantiationPolicyReport,
     intended_integration_definitions: Metric,
     profiles: Vec<ProfileDiagnosticsReport<'a>>,
+}
+
+#[derive(Serialize)]
+struct InstantiationPolicyReport {
+    unit_profile: &'static str,
+    combined_profile: &'static str,
+    integration_profile: &'static str,
 }
 
 #[derive(Serialize)]
@@ -374,6 +382,10 @@ pub(crate) fn run(
                 let (unit_diagnostics, unit_groups) = instantiation_diagnostics(unit_data)?;
                 let (integration_diagnostics, integration_groups) =
                     instantiation_diagnostics(integration_data)?;
+                validate_unit_instantiation_completeness(
+                    target,
+                    &unit_data.totals.instantiations,
+                )?;
                 validate_source_definition_completeness(
                     target,
                     "combined",
@@ -389,7 +401,7 @@ pub(crate) fn run(
                     diagnostics_json_path,
                     target,
                     intended_integration_definitions,
-                    [
+                    &[
                         (
                             "combined",
                             data,
@@ -408,7 +420,7 @@ pub(crate) fn run(
                     ],
                 )?;
                 println!(
-                    "coverage policy satisfied for {target}: unique lines {}/{}, LLVM lines {}/{}, regions {}/{}, functions {}/{}, instantiations {}/{} (diagnostic)",
+                    "coverage policy satisfied for {target}: unique lines {}/{}, LLVM lines {}/{}, regions {}/{}, functions {}/{}, raw combined instantiations {}/{} (compiler-sensitive diagnostic), unit instantiations {}/{} (required complete)",
                     inputs.physical_lines.covered,
                     inputs.physical_lines.count,
                     data.totals.lines.covered,
@@ -419,6 +431,8 @@ pub(crate) fn run(
                     data.totals.functions.count,
                     data.totals.instantiations.covered,
                     data.totals.instantiations.count,
+                    unit_data.totals.instantiations.covered,
+                    unit_data.totals.instantiations.count,
                 );
                 print_instantiation_diagnostics(target, "combined", data, &combined_diagnostics);
                 print_instantiation_diagnostics(target, "unit", unit_data, &unit_diagnostics);
@@ -660,6 +674,16 @@ fn validate_source_definition_completeness(
     Ok(())
 }
 
+fn validate_unit_instantiation_completeness(target: &str, instantiations: &Metric) -> Result<()> {
+    if instantiations.count == 0 || instantiations.covered != instantiations.count {
+        return Err(invalid_data(format!(
+            "coverage regression for {target}: unit instantiations must be nonempty and complete, got {}/{}",
+            instantiations.covered, instantiations.count
+        )));
+    }
+    Ok(())
+}
+
 fn validate_integration_instantiations(
     target: &str,
     unit_groups: &BTreeMap<DefinitionKey, DefinitionGroupState>,
@@ -754,29 +778,28 @@ type ProfileEvidence<'a> = (
     Option<&'a BTreeMap<DefinitionKey, DefinitionGroupState>>,
 );
 
-fn write_diagnostics_report<const N: usize>(
+fn write_diagnostics_report(
     path: &Path,
     target: &str,
     intended_integration_definitions: Metric,
-    profiles: [ProfileEvidence<'_>; N],
+    profiles: &[ProfileEvidence<'_>],
 ) -> Result<()> {
     let profiles = profiles
-        .into_iter()
+        .iter()
+        .copied()
         .map(|(profile, data, groups, diagnostics, unit_groups)| {
             let source_location_execution_union =
                 source_locations::summarize(target, profile, groups, unit_groups);
+            source_location_execution_union
+                .validate(target, profile)
+                .map_err(invalid_data)?;
             let definitions = groups
                 .iter()
                 .map(|(key, state)| {
+                    // Earlier profile validation guarantees that an uncovered
+                    // group reaching the writer is covered by the unit profile.
                     let ownership = if state.covered_entries == 0 {
-                        if unit_groups
-                            .and_then(|groups| groups.get(key))
-                            .is_some_and(|unit| unit.covered_entries != 0)
-                        {
-                            "private-unit"
-                        } else {
-                            "unowned"
-                        }
+                        "private-unit"
                     } else if state.covered_entries < state.entries {
                         "compiler-asymmetric"
                     } else {
@@ -794,7 +817,7 @@ fn write_diagnostics_report<const N: usize>(
                     }
                 })
                 .collect();
-            ProfileDiagnosticsReport {
+            Ok(ProfileDiagnosticsReport {
                 profile,
                 llvm_instantiations: data.totals.instantiations,
                 json_entries: Metric {
@@ -817,12 +840,17 @@ fn write_diagnostics_report<const N: usize>(
                 asymmetric_definition_groups: diagnostics.asymmetric_definition_groups,
                 definitions,
                 file_gaps: &diagnostics.file_gaps,
-            }
+            })
         })
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>>>()?;
     let report = CoverageDiagnosticsReport {
-        schema_version: 4,
+        schema_version: 5,
         target,
+        instantiation_policy: InstantiationPolicyReport {
+            unit_profile: "required-complete",
+            combined_profile: "compiler-sensitive-diagnostic",
+            integration_profile: "reviewed-unit-owned-residuals",
+        },
         intended_integration_definitions,
         profiles,
     };
@@ -1060,7 +1088,7 @@ mod tests {
     }
 
     #[test]
-    fn three_profile_reports_preserve_unit_owned_integration_residuals() {
+    fn three_profile_reports_preserve_reviewed_unit_owned_integration_residuals() {
         let target = "x86_64-unknown-linux-gnu";
         let directory = tempfile::tempdir().unwrap();
         let combined = directory.path().join("combined.json");
@@ -1076,10 +1104,10 @@ mod tests {
                 .as_array_mut()
                 .unwrap()
                 .push(serde_json::json!({
-                    "name": "private-fixture",
+                    "name": "13invalid_stats",
                     "count": hits,
-                    "filenames": ["src/private_fixture.rs"],
-                    "regions": [[999, 1, 999, 2, hits, 0, 0, 0]]
+                    "filenames": ["src/stats.rs"],
+                    "regions": [[20, 1, 21, 2, hits, 0, 0, 0]]
                 }));
             fs::write(path, export.to_string()).unwrap();
         }
@@ -1101,7 +1129,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .find(|entry| entry["source"] == "src/private_fixture.rs")
+                .find(|entry| entry["source"] == "src/stats.rs" && entry["line"] == 20)
                 .unwrap();
             let integration = profile["profile"] == "integration";
             assert_eq!(
@@ -1117,7 +1145,7 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_preserve_external_execution_and_every_ownership_state() {
+    fn diagnostics_preserve_external_execution_and_reject_unowned_reports() {
         let target = "x86_64-unknown-linux-gnu";
         let mut fixture = fixture_export(target);
         fixture["data"][0]["functions"] = serde_json::json!([
@@ -1153,24 +1181,19 @@ mod tests {
         assert_eq!(diagnostics.asymmetric_definition_groups, 1);
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("ownership.json");
-        write_diagnostics_report(
+        let error = write_diagnostics_report(
             &path,
             target,
             Metric {
                 count: 0,
                 covered: 0,
             },
-            [("integration", data, &groups, &diagnostics, None)],
+            &[("integration", data, &groups, &diagnostics, None)],
         )
-        .unwrap();
-        let report: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
-        let ownership = report["profiles"][0]["definitions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|entry| entry["ownership"].as_str().unwrap())
-            .collect::<Vec<_>>();
-        assert_eq!(ownership, ["unowned", "compiler-asymmetric", "covered"]);
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("unreviewed or lack unit ownership"));
+        assert!(!path.exists());
     }
 
     #[test]
@@ -1470,6 +1493,38 @@ mod tests {
     }
 
     #[test]
+    fn unit_instantiation_policy_requires_nonempty_complete_evidence() {
+        for (metric, accepted) in [
+            (
+                Metric {
+                    count: 1,
+                    covered: 1,
+                },
+                true,
+            ),
+            (
+                Metric {
+                    count: 1,
+                    covered: 0,
+                },
+                false,
+            ),
+            (
+                Metric {
+                    count: 0,
+                    covered: 0,
+                },
+                false,
+            ),
+        ] {
+            assert_eq!(
+                validate_unit_instantiation_completeness("fixture", &metric).is_ok(),
+                accepted
+            );
+        }
+    }
+
+    #[test]
     fn native_coverage_command_writes_all_profiles_and_propagates_output_errors() {
         for target in [
             "x86_64-unknown-linux-gnu",
@@ -1497,7 +1552,11 @@ mod tests {
             run(target, &json, &lcov, &unit, &integration, &diagnostics).unwrap();
             let report: serde_json::Value =
                 serde_json::from_slice(&fs::read(&diagnostics).unwrap()).unwrap();
-            assert_eq!(report["schema_version"], 4);
+            assert_eq!(report["schema_version"], 5);
+            assert_eq!(
+                report["instantiation_policy"]["unit_profile"],
+                "required-complete"
+            );
             assert_eq!(report["target"], target);
             assert_eq!(report["profiles"].as_array().unwrap().len(), 3);
             for (profile, expected) in report["profiles"].as_array().unwrap().iter().zip([
@@ -1512,6 +1571,19 @@ mod tests {
                 );
             }
             assert!(run(target, &json, &lcov, &unit, &integration, directory.path()).is_err());
+
+            let mut incomplete_unit = fixture_export(target);
+            let count = incomplete_unit["data"][0]["totals"]["instantiations"]["count"]
+                .as_u64()
+                .unwrap();
+            incomplete_unit["data"][0]["totals"]["instantiations"]["covered"] =
+                serde_json::json!(count - 1);
+            fs::write(&unit, incomplete_unit.to_string()).unwrap();
+            let error = run(target, &json, &lcov, &unit, &integration, &diagnostics)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unit instantiations must be nonempty and complete"));
+
             fs::write(&unit, r#"{"type":"llvm.coverage.json.export","data":[]}"#).unwrap();
             let error = run(target, &json, &lcov, &unit, &integration, &diagnostics)
                 .unwrap_err()

@@ -80,9 +80,10 @@ fn blocks_to_bytes(blocks: u64) -> Result<u64> {
 #[cold]
 #[inline(never)]
 fn i64_to_u64(value: i64, message: &'static str) -> Result<u64> {
-    value
-        .try_into()
-        .map_err(|_| Error::new(ErrorKind::InvalidData, message))
+    match value.try_into() {
+        Ok(value) => Ok(value),
+        Err(_) => Err(Error::new(ErrorKind::InvalidData, message)),
+    }
 }
 
 #[cold]

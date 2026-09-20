@@ -54,19 +54,27 @@ pub(crate) fn allocation_state_result(
 }
 
 fn allocation_state_from_values(allocated_size: i64, file_size: i64) -> Result<AllocationState> {
-    Ok(AllocationState {
-        allocated_size: u64::try_from(allocated_size).map_err(|_| {
-            Error::new(
+    let allocated_size = match u64::try_from(allocated_size) {
+        Ok(size) => size,
+        Err(_) => {
+            return Err(Error::new(
                 ErrorKind::InvalidData,
                 "filesystem returned a negative allocation size",
-            )
-        })?,
-        file_size: u64::try_from(file_size).map_err(|_| {
-            Error::new(
+            ));
+        }
+    };
+    let file_size = match u64::try_from(file_size) {
+        Ok(size) => size,
+        Err(_) => {
+            return Err(Error::new(
                 ErrorKind::InvalidData,
                 "filesystem returned a negative file size",
-            )
-        })?,
+            ));
+        }
+    };
+    Ok(AllocationState {
+        allocated_size,
+        file_size,
     })
 }
 
@@ -374,8 +382,15 @@ pub(crate) fn requested_range_is_allocated(file: &File, len: u64) -> Result<bool
     if len == 0 {
         return Ok(true);
     }
-    let len = i64::try_from(len)
-        .map_err(|_| Error::new(ErrorKind::InvalidInput, "allocation length is too large"))?;
+    let len = match i64::try_from(len) {
+        Ok(len) => len,
+        Err(_) => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "allocation length is too large",
+            ));
+        }
+    };
     let query = FILE_ALLOCATED_RANGE_BUFFER {
         FileOffset: 0,
         Length: len,

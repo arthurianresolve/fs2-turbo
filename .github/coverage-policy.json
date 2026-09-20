@@ -111,6 +111,14 @@
         "count": 30,
         "covered": 30
       },
+      "instantiation_profiles": {
+        "unit": {
+          "count": 122,
+          "covered": 122
+        },
+        "maximum_combined_asymmetric_definition_groups": 38,
+        "maximum_integration_asymmetric_definition_groups": 30
+      },
       "gap_provenance": {
         "toolchain": "1.98.1",
         "llvm_cov": "0.8.7",
@@ -231,6 +239,14 @@
       "intended_integration_definitions": {
         "count": 36,
         "covered": 36
+      },
+      "instantiation_profiles": {
+        "unit": {
+          "count": 208,
+          "covered": 208
+        },
+        "maximum_combined_asymmetric_definition_groups": 51,
+        "maximum_integration_asymmetric_definition_groups": 31
       },
       "gap_provenance": {
         "toolchain": "1.98.1",
@@ -418,6 +434,14 @@
       "intended_integration_definitions": {
         "count": 30,
         "covered": 30
+      },
+      "instantiation_profiles": {
+        "unit": {
+          "count": 121,
+          "covered": 121
+        },
+        "maximum_combined_asymmetric_definition_groups": 33,
+        "maximum_integration_asymmetric_definition_groups": 30
       },
       "gap_provenance": {
         "toolchain": "1.98.1",

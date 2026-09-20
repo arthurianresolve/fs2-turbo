@@ -63,11 +63,15 @@ function fixture(t, profile = 'primary') {
       branches: [[1, 4, 1, 8, 1, 1, 0, 0, 4]], summary: {branches: totals.branches},
     } : {})}], functions: [{name: 'covered', filenames: [sourceFile], count: 1, regions: [[1, 1, 1, 20, 1, 0, 0, 0]]}],
   }]};
-  const diagnostics = target => ({schema_version: 4, target,
-    intended_integration_definitions: counts, profiles: [{
-      profile: 'combined', json_entries: counts, source_definitions: counts,
-      llvm_instantiations: counts, definitions: [{covered_entries: 1}],
-    }]});
+  const diagnosticProfile = profile => ({profile, json_entries: counts, source_definitions: counts,
+    llvm_instantiations: counts, asymmetric_definition_groups: 0,
+    definitions: [{covered_entries: 1, ownership: 'covered'}],
+    source_location_execution_union: {policy_enforced: true, locations: counts, records: []}});
+  const diagnostics = target => ({schema_version: 5, target,
+    instantiation_policy: {unit_profile: 'required-complete', combined_profile: 'compiler-sensitive-diagnostic',
+      integration_profile: 'reviewed-unit-owned-residuals'},
+    intended_integration_definitions: counts,
+    profiles: ['combined', 'unit', 'integration'].map(diagnosticProfile)});
   const directory = path.join(root, 'inputs');
   fs.mkdirSync(directory);
   for (const target of audit.TARGETS[profile]) {
@@ -75,6 +79,8 @@ function fixture(t, profile = 'primary') {
     fs.mkdirSync(folder);
     policy.targets[target] = {reported_files: ['src/lib.rs'], llvm_totals: totals,
       json_entries: counts, source_definitions: counts, intended_integration_definitions: counts, reviewed_gaps: [],
+      instantiation_profiles: {unit: counts, maximum_combined_asymmetric_definition_groups: 0,
+        maximum_integration_asymmetric_definition_groups: 0},
       gap_provenance: {toolchain: '1.98.1', llvm_cov: '0.8.7', export_version: '3.1.0'}};
     if (branch) Object.assign(policy.targets[target], {
       outcomes: 2, locations: [[sourceFile, 1, 4, 1, 8]], runner_label: 'fixture',
@@ -115,7 +121,18 @@ test('three-platform merge counts shared source only once', t => {
   assert.deepEqual(result.merged_unique_lines, {count: 1, covered: 1});
   assert.equal(result.platforms.length, 3);
   assert.equal(result.sources_without_line_records.length, 0);
-  assert.match(audit.render(result), /Instantiations/);
+  assert.match(audit.render(result), /instantiations/i);
+});
+
+test('primary profile gates unit instantiations independently of raw combined diagnostics', t => {
+  const f = fixture(t), target = audit.TARGETS.primary[0];
+  const file = fs.readdirSync(f.folder).find(name => name.includes('diagnostics-'));
+  const diagnostics = JSON.parse(fs.readFileSync(path.join(f.folder, file)));
+  diagnostics.profiles.find(profile => profile.profile === 'unit').llvm_instantiations.covered = 0;
+  fs.writeFileSync(path.join(f.folder, file), JSON.stringify(diagnostics));
+  f.reseal();
+  assert.throws(f.run, /Unit instantiations are below 100%/);
+  assert.equal(target, 'x86_64-unknown-linux-gnu');
 });
 test('missing platform cannot produce a complete green result', t => {
   const f = fixture(t);
@@ -277,6 +294,10 @@ for (const profile of Object.keys(audit.TARGETS)) {
     const f = fixture(t, profile), env = outputs(f);
     assert.equal(audit.main(['collect', profile, f.directory], f.root, env, () => f.expected), 0);
     assert.match(fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /Coverage evidence:/);
+    if (profile === 'primary' || profile === 'msrv') {
+      assert.match(fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /Raw combined instantiations/);
+      assert.match(fs.readFileSync(env.GITHUB_STEP_SUMMARY, 'utf8'), /Unit instantiations \(gate\)/);
+    }
     assert.match(fs.readFileSync(env.GITHUB_OUTPUT, 'utf8'), /report_directory=/);
   });
 }

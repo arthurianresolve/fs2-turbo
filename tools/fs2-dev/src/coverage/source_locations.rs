@@ -11,7 +11,7 @@ const MACOS: &str = "aarch64-apple-darwin";
 
 #[derive(Serialize)]
 pub(super) struct SourceLocationExecutionUnion {
-    informational_only: bool,
+    policy_enforced: bool,
     locations: Metric,
     multi_topology_locations: usize,
     uncovered_groups_with_executed_location: usize,
@@ -110,7 +110,7 @@ pub(super) fn summarize(
         .collect::<Vec<_>>();
 
     SourceLocationExecutionUnion {
-        informational_only: true,
+        policy_enforced: true,
         locations: Metric {
             count: records.len() as u64,
             covered: records.iter().filter(|record| record.executed).count() as u64,
@@ -130,9 +130,43 @@ pub(super) fn summarize(
 }
 
 impl SourceLocationExecutionUnion {
+    pub(super) fn validate(&self, target: &str, profile: &str) -> Result<(), String> {
+        if self.locations.count == 0 {
+            return Err(format!(
+                "coverage regression for {target}: {profile} source-location union is empty"
+            ));
+        }
+        match profile {
+            "combined" | "unit" => Ok(()),
+            "integration" => {
+                let mut unreviewed = Vec::new();
+                for record in &self.records {
+                    if !record.executed
+                        && (record.all_uncovered_topologies_unit_owned != Some(true)
+                            || record.reviewed_integration_gap.is_none())
+                    {
+                        unreviewed.push(format!(
+                            "{}:{}:{}",
+                            record.source, record.line, record.column
+                        ));
+                    }
+                }
+                if unreviewed.is_empty() {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "coverage integration source-location gaps for {target} are unreviewed or lack unit ownership: [{}]",
+                        unreviewed.join(", ")
+                    ))
+                }
+            }
+            _ => Err(format!("unsupported coverage profile: {profile}")),
+        }
+    }
+
     pub(super) fn print(&self, target: &str, profile: &str) {
         println!(
-            "{profile} source-location execution union for {target}: {}/{}, multi-topology locations {}, unexecuted topology groups at executed locations {} (informational only; original metrics and gates unchanged)",
+            "{profile} source-location execution union for {target}: {}/{}, multi-topology locations {}, unexecuted topology groups at executed locations {} (profile-aware policy enforced)",
             self.locations.covered,
             self.locations.count,
             self.multi_topology_locations,
@@ -256,6 +290,50 @@ mod tests {
         validate_source_definition_completeness, write_diagnostics_report,
     };
     use super::*;
+
+    #[test]
+    fn validation_rejects_incomplete_unreviewed_and_unknown_profiles() {
+        let unsupported = SourceLocationExecutionUnion {
+            policy_enforced: true,
+            locations: Metric {
+                count: 2,
+                covered: 1,
+            },
+            multi_topology_locations: 0,
+            uncovered_groups_with_executed_location: 0,
+            gap_review_baseline: REVIEW_BASELINE,
+            records: Vec::new(),
+        };
+        assert_eq!(
+            unsupported.validate(LINUX, "unsupported").unwrap_err(),
+            "unsupported coverage profile: unsupported"
+        );
+
+        let unreviewed = SourceLocationExecutionUnion {
+            policy_enforced: true,
+            locations: Metric {
+                count: 1,
+                covered: 0,
+            },
+            multi_topology_locations: 0,
+            uncovered_groups_with_executed_location: 0,
+            gap_review_baseline: REVIEW_BASELINE,
+            records: vec![SourceLocationRecord {
+                source: "src/fixture.rs".to_owned(),
+                line: 7,
+                column: 3,
+                executed: false,
+                definition_indexes: vec![0],
+                uncovered_definition_indexes: vec![0],
+                all_uncovered_topologies_unit_owned: Some(false),
+                reviewed_integration_gap: None,
+            }],
+        };
+        assert_eq!(
+            unreviewed.validate(LINUX, "integration").unwrap_err(),
+            "coverage integration source-location gaps for x86_64-unknown-linux-gnu are unreviewed or lack unit ownership: [src/fixture.rs:7:3]"
+        );
+    }
 
     fn key(source: &str, line: u64, column: u64, end_line: u64) -> DefinitionKey {
         DefinitionKey {
@@ -499,6 +577,7 @@ mod tests {
             let groups = BTreeMap::from([(definition.clone(), state(symbol, false))]);
             let units = BTreeMap::from([(definition, state(symbol, true))]);
             let report = summarize(target, "integration", &groups, Some(&units));
+            report.validate(target, "integration").unwrap();
             let review = report.records[0].reviewed_integration_gap.as_ref().unwrap();
             assert_eq!(review.category, category);
             assert_eq!(review.symbol_fragment, symbol);
@@ -519,15 +598,16 @@ mod tests {
     }
 
     #[test]
-    fn empty_location_union_is_informational() {
+    fn empty_location_union_is_rejected_by_policy() {
         let report = summarize(LINUX, "combined", &BTreeMap::new(), None);
-        assert!(report.informational_only);
+        assert!(report.policy_enforced);
         assert_eq!(report.locations.count, 0);
         assert_eq!(report.locations.covered, 0);
         assert_eq!(report.multi_topology_locations, 0);
         assert_eq!(report.uncovered_groups_with_executed_location, 0);
         assert_eq!(report.gap_review_baseline, REVIEW_BASELINE);
         assert!(report.records.is_empty());
+        assert!(report.validate(LINUX, "combined").is_err());
     }
 
     #[test]
@@ -765,6 +845,7 @@ mod tests {
                 Some(true)
             );
             assert!(report.records[0].reviewed_integration_gap.is_none());
+            assert!(report.validate(LINUX, "integration").is_err());
         }
     }
 
@@ -823,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn schema_four_preserves_raw_metrics_and_does_not_bypass_existing_gates() {
+    fn schema_five_preserves_raw_metrics_and_enforces_profile_policy() {
         let complete = Metric {
             count: 1,
             covered: 1,
@@ -879,13 +960,21 @@ mod tests {
                 count: 0,
                 covered: 0,
             },
-            [("integration", &data, &groups, &diagnostics, Some(&units))],
+            &[("integration", &data, &groups, &diagnostics, Some(&units))],
         )
         .unwrap();
         let encoded = std::fs::read(&path).unwrap();
         assert_eq!(encoded.last(), Some(&b'\n'));
         let report: serde_json::Value = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["schema_version"], 5);
+        assert_eq!(
+            report["instantiation_policy"],
+            serde_json::json!({
+                "unit_profile": "required-complete",
+                "combined_profile": "compiler-sensitive-diagnostic",
+                "integration_profile": "reviewed-unit-owned-residuals"
+            })
+        );
         let profile = &report["profiles"][0];
         for name in [
             "source_definitions",
@@ -906,7 +995,7 @@ mod tests {
         assert_eq!(definitions[1]["symbols"][0], "covered-instance");
         assert_eq!(definitions[1]["regions"][0][2], 9);
         let union = &profile["source_location_execution_union"];
-        assert_eq!(union["informational_only"], true);
+        assert_eq!(union["policy_enforced"], true);
         assert_eq!(union["locations"]["count"], 1);
         assert_eq!(union["locations"]["covered"], 1);
         assert_eq!(union["multi_topology_locations"], 1);

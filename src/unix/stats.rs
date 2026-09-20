@@ -169,7 +169,10 @@ where
 
 #[cfg(all(target_os = "linux", target_pointer_width = "64", target_env = "gnu"))]
 fn signed_filesystem_value(value: i64, message: &'static str) -> Result<u64> {
-    value.try_into().map_err(|_| invalid_stats(message))
+    match value.try_into() {
+        Ok(value) => Ok(value),
+        Err(_) => Err(invalid_stats(message)),
+    }
 }
 
 #[cfg(test)]
