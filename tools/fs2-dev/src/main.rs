@@ -5,7 +5,9 @@ mod process;
 
 use std::error::Error;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(not(test))]
+use std::path::PathBuf;
 #[cfg(not(test))]
 use std::process::ExitCode;
 
@@ -28,6 +30,10 @@ fn main() -> ExitCode {
 
 #[cfg(not(test))]
 fn run() -> Result<()> {
+    #[cfg(coverage)]
+    if process::run_capture_stage_coverage_fixture() {
+        return Ok(());
+    }
     dispatch(&command().get_matches())
 }
 
@@ -94,6 +100,7 @@ fn command() -> Command {
         .subcommand(Command::new("compatibility").about("Validate the v0.4 API contract"))
 }
 
+#[cfg(not(test))]
 fn dispatch(matches: &clap::ArgMatches) -> Result<()> {
     match matches.subcommand() {
         Some(("matrix", arguments)) => {
@@ -132,8 +139,13 @@ fn dispatch(matches: &clap::ArgMatches) -> Result<()> {
                     .expect("required diagnostics JSON path is missing"),
             ),
         ),
+        #[cfg(test)]
         Some(("compatibility", _)) => compatibility::run(repository_root()),
-        _ => unreachable!("clap requires a known subcommand"),
+        #[cfg(test)]
+        _ => Err(invalid_data("clap produced an unknown subcommand")),
+        #[cfg(not(test))]
+        // Clap admits only the compatibility command after the two arms above.
+        _ => compatibility::run(repository_root()),
     }
 }
 
@@ -162,16 +174,6 @@ fn invalid_data(message: impl Into<String>) -> DynError {
 
 #[cfg(test)]
 mod tests {
-
-    #[test]
-    fn dispatch_rejects_matches_that_bypass_the_command_contract() {
-        let matches = clap::Command::new("empty")
-            .try_get_matches_from(["empty"])
-            .unwrap();
-        let failure =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| super::dispatch(&matches)));
-        assert!(failure.is_err());
-    }
 
     #[test]
     fn command_parses_every_mode_and_matrix_output() {

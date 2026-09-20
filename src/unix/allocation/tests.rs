@@ -143,29 +143,56 @@ fn macos_allocate_space_covers_native_control_flow() {
         ErrorKind::InvalidInput
     );
 
-    let invalid = File::open(&path).unwrap();
-    let invalid_fd = invalid.as_raw_fd();
+    let status = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "unix::allocation::tests::macos_invalid_descriptor_fixture",
+            "--nocapture",
+        ])
+        .env("FS2_MACOS_INVALID_DESCRIPTOR_FIXTURE", "1")
+        .status()
+        .unwrap();
+    assert_eq!(status.code(), Some(0));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn macos_invalid_descriptor_fixture() {
+    if std::env::var_os("FS2_MACOS_INVALID_DESCRIPTOR_FIXTURE").is_none() {
+        return;
+    }
+
+    let file = std::mem::ManuallyDrop::new(tempfile::tempfile().unwrap());
+    let invalid_fd = file.as_raw_fd();
+    // SAFETY: the wrapper is manually dropped, so this descriptor is closed
+    // exactly once and cannot be reused by another test in this child process.
     assert_eq!(unsafe { libc::close(invalid_fd) }, 0);
-    assert!(
-        super::allocate_space(
-            &invalid,
-            super::AllocationState {
-                allocated_size: 0,
-                file_size: 0,
-            },
-            1,
-        )
-        .unwrap_err()
-        .raw_os_error()
-        .is_some()
+    let state = super::AllocationState {
+        allocated_size: 0,
+        file_size: 0,
+    };
+
+    // Exercise every branch through one child-local closure type so its
+    // compiler-generated instantiations remain complete.
+    let mut results = [0, -1, 0, -1, -1].into_iter();
+    let mut preallocate = |_: &File, _: &mut libc::fstore_t| results.next().unwrap();
+    super::allocate_space_with(&file, state, 1, &mut preallocate).unwrap();
+    super::allocate_space_with(&file, state, 1, &mut preallocate).unwrap();
+    assert!(super::allocate_space_with(&file, state, 1, &mut preallocate).is_err());
+    super::allocate_space_with(&file, state, 0, &mut preallocate).unwrap();
+    assert_eq!(
+        super::allocate_space_with(&file, state, u64::MAX, &mut preallocate)
+            .unwrap_err()
+            .kind(),
+        ErrorKind::InvalidInput
     );
+
     assert!(
-        super::allocate_space_with(&invalid, empty_state, 1, &mut |_, _| -1,)
+        super::allocate_space(&file, state, 1)
             .unwrap_err()
             .raw_os_error()
             .is_some()
     );
-    std::mem::forget(invalid);
 }
 
 #[cfg(all(target_os = "linux", target_pointer_width = "64"))]

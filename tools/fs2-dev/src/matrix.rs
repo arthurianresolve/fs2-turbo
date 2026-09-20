@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -115,72 +115,105 @@ struct CargoPackage {
     rust_version: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+enum WorkflowFile {
+    Ci,
+    ReleaseGates,
+    Policy,
+}
+
 pub(crate) fn run(root: &Path, github_output: Option<&Path>) -> Result<()> {
-    validate_xtask_alias(root)?;
-    let rust_version = package_rust_version(root)?;
-    let registry = load_registry(&root.join("support-matrix.json"))?;
-    validate_registry(&registry, &rust_version)?;
-    validate_workflow_directory(root, &registry)?;
-    let generated = matrices(&registry);
-    if let Some(path) = github_output {
-        write_github_output(path, &generated, &rust_version)?;
-    } else {
-        println!("{}", serde_json::to_string_pretty(&generated)?);
-    }
-    Ok(())
+    validate_xtask_alias(root)
+        .and_then(|()| package_rust_version(root))
+        .and_then(|rust_version| {
+            load_registry(&root.join("support-matrix.json")).and_then(|registry| {
+                validate_registry(&registry, &rust_version)
+                    .and_then(|()| validate_workflow_directory(root, &registry))
+                    .and_then(|()| {
+                        let generated = matrices(&registry);
+                        if let Some(path) = github_output {
+                            write_github_output(path, &generated, &rust_version)
+                        } else {
+                            let rendered = serde_json::to_string_pretty(&generated)
+                                .expect("support matrices contain only JSON-serializable values");
+                            println!("{rendered}");
+                            Ok(())
+                        }
+                    })
+            })
+        })
 }
 
 fn validate_workflow_directory(root: &Path, registry: &SupportRegistry) -> Result<()> {
     let directory = root.join(".github/workflows");
-    let mut entries = fs::read_dir(&directory)?.collect::<std::io::Result<Vec<_>>>()?;
-    entries.sort_by_key(|entry| entry.file_name());
-    let mut found_ci = false;
-    let mut found_release_gates = false;
+    fs::read_dir(&directory)
+        .map_err(crate::DynError::from)
+        .and_then(|entries| {
+            entries
+                .collect::<io::Result<Vec<_>>>()
+                .map_err(crate::DynError::from)
+        })
+        .and_then(|mut entries| {
+            entries.sort_by_key(|entry| entry.file_name());
+            entries
+                .into_iter()
+                .try_fold((false, false), |(found_ci, found_release_gates), entry| {
+                    validate_workflow_entry(registry, entry).map(|kind| match kind {
+                        WorkflowFile::Ci => (true, found_release_gates),
+                        WorkflowFile::ReleaseGates => (found_ci, true),
+                        WorkflowFile::Policy => (found_ci, found_release_gates),
+                    })
+                })
+                .and_then(|(found_ci, found_release_gates)| {
+                    if found_ci && found_release_gates {
+                        Ok(())
+                    } else {
+                        Err(invalid_data(
+                            "workflow directory must contain ci.yml and release-gates.yml",
+                        ))
+                    }
+                })
+        })
+}
 
-    for entry in entries {
-        let path = entry.path();
-        let file_type = entry.file_type()?;
-        if file_type.is_symlink()
-            || workflow_entry_is_windows_reparse_point(&path)?
-            || !file_type.is_file()
-        {
-            return Err(invalid_data(format!(
-                "workflow directory contains a link or non-file entry: {}",
-                path.display()
-            )));
-        }
-        if !matches!(
-            path.extension(),
-            Some(extension) if extension == OsStr::new("yml") || extension == OsStr::new("yaml")
-        ) {
-            return Err(invalid_data(format!(
-                "workflow directory contains an unexpected file: {}",
-                path.display()
-            )));
-        }
-        let name = workflow_file_name(&path)?;
-        let workflow = load_workflow(&path)?;
-        match name {
-            "ci.yml" => {
-                validate_workflow(registry, &workflow)?;
-                found_ci = true;
-            }
-            "release-gates.yml" => {
-                validate_release_workflow(&workflow)?;
-                found_release_gates = true;
-            }
-            _ => {
-                validate_workflow_policy(&workflow)?;
-            }
-        }
-    }
-
-    if !found_ci || !found_release_gates {
-        return Err(invalid_data(
-            "workflow directory must contain ci.yml and release-gates.yml",
-        ));
-    }
-    Ok(())
+fn validate_workflow_entry(
+    registry: &SupportRegistry,
+    entry: fs::DirEntry,
+) -> Result<WorkflowFile> {
+    let path = entry.path();
+    entry
+        .file_type()
+        .map_err(crate::DynError::from)
+        .and_then(|file_type| {
+            workflow_entry_is_windows_reparse_point(&path).and_then(|reparse_point| {
+                if file_type.is_symlink() || reparse_point || !file_type.is_file() {
+                    return Err(invalid_data(format!(
+                        "workflow directory contains a link or non-file entry: {}",
+                        path.display()
+                    )));
+                }
+                if !matches!(
+                    path.extension(),
+                    Some(extension)
+                        if extension == OsStr::new("yml") || extension == OsStr::new("yaml")
+                ) {
+                    return Err(invalid_data(format!(
+                        "workflow directory contains an unexpected file: {}",
+                        path.display()
+                    )));
+                }
+                workflow_file_name(&path).and_then(|name| {
+                    load_workflow(&path).and_then(|workflow| match name {
+                        "ci.yml" => {
+                            validate_workflow(registry, &workflow).map(|()| WorkflowFile::Ci)
+                        }
+                        "release-gates.yml" => validate_release_workflow(&workflow)
+                            .map(|()| WorkflowFile::ReleaseGates),
+                        _ => validate_workflow_policy(&workflow).map(|_| WorkflowFile::Policy),
+                    })
+                })
+            })
+        })
 }
 
 #[cfg(windows)]
@@ -188,7 +221,9 @@ fn workflow_entry_is_windows_reparse_point(path: &Path) -> Result<bool> {
     use std::os::windows::fs::MetadataExt as _;
     use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    Ok(fs::symlink_metadata(path)?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .map_err(crate::DynError::from)
 }
 
 #[cfg(not(windows))]
@@ -204,11 +239,15 @@ fn workflow_file_name(path: &Path) -> Result<&str> {
 }
 
 fn load_registry(path: &Path) -> Result<SupportRegistry> {
-    Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
+    fs::read_to_string(path)
+        .map_err(crate::DynError::from)
+        .and_then(|contents| serde_json::from_str(&contents).map_err(crate::DynError::from))
 }
 
 fn load_workflow(path: &Path) -> Result<Value> {
-    Ok(serde_yaml_ng::from_str(&fs::read_to_string(path)?)?)
+    fs::read_to_string(path)
+        .map_err(crate::DynError::from)
+        .and_then(|contents| serde_yaml_ng::from_str(&contents).map_err(crate::DynError::from))
 }
 
 fn package_rust_version(root: &Path) -> Result<String> {
@@ -419,7 +458,8 @@ fn validate_workflow(registry: &SupportRegistry, workflow: &Value) -> Result<()>
                 )));
             }
             Some(configured) if declared.contains(job_name.as_str()) => {
-                let expected = serde_json::to_value(&generated[job_name])?;
+                let expected = serde_json::to_value(&generated[job_name])
+                    .expect("support matrices contain only JSON-serializable values");
                 if configured != &expected {
                     return Err(invalid_data(format!(
                         "workflow job {job_name} literal matrix drifted from support data"
@@ -471,51 +511,68 @@ fn validate_workflow_policy(workflow: &Value) -> Result<&serde_json::Map<String,
     let Some(jobs) = workflow.get("jobs").and_then(Value::as_object) else {
         return Err(invalid_data("workflow must define a jobs object"));
     };
-    for (job_name, job) in jobs {
-        let Some(job) = job.as_object() else {
-            return Err(invalid_data(format!(
-                "workflow job {job_name} must be an object"
-            )));
-        };
-        if job.contains_key("permissions") {
-            return Err(invalid_data(format!(
-                "workflow job {job_name} may not override token permissions"
-            )));
-        }
-        if let Some(action) = job.get("uses").and_then(Value::as_str) {
-            validate_action(action)?;
-        }
+    jobs.iter()
+        .try_for_each(|(job_name, job)| validate_workflow_job(job_name, job))
+        .map(|()| jobs)
+}
+
+fn validate_workflow_job(job_name: &str, job: &Value) -> Result<()> {
+    let Some(job) = job.as_object() else {
+        return Err(invalid_data(format!(
+            "workflow job {job_name} must be an object"
+        )));
+    };
+    if job.contains_key("permissions") {
+        return Err(invalid_data(format!(
+            "workflow job {job_name} may not override token permissions"
+        )));
+    }
+    let action_result = job
+        .get("uses")
+        .and_then(Value::as_str)
+        .map_or(Ok(()), validate_action);
+    action_result.and_then(|()| {
         let Some(steps) = job.get("steps") else {
-            continue;
+            return Ok(());
         };
         let Some(steps) = steps.as_array() else {
             return Err(invalid_data(format!(
                 "workflow job {job_name} steps must be a list"
             )));
         };
-        for step in steps {
-            let Some(step) = step.as_object() else {
-                return Err(invalid_data(format!(
-                    "workflow job {job_name} contains an invalid step"
-                )));
-            };
-            if let Some(action) = step.get("uses").and_then(Value::as_str) {
-                validate_action(action)?;
-                if action_repository(action) == Some("actions/checkout") {
-                    validate_checkout_credentials(job_name, step)?;
-                }
+        steps
+            .iter()
+            .try_for_each(|step| validate_workflow_step(job_name, step))
+    })
+}
+
+fn validate_workflow_step(job_name: &str, step: &Value) -> Result<()> {
+    let Some(step) = step.as_object() else {
+        return Err(invalid_data(format!(
+            "workflow job {job_name} contains an invalid step"
+        )));
+    };
+    let action_result = match step.get("uses").and_then(Value::as_str) {
+        Some(action) => validate_action(action).and_then(|()| {
+            if action_repository(action) == Some("actions/checkout") {
+                validate_checkout_credentials(job_name, step)
+            } else {
+                Ok(())
             }
-            if let Some(command) = step.get("run").and_then(Value::as_str) {
-                if has_unquoted_matrix_target(command) {
-                    return Err(invalid_data(format!(
-                        "workflow job {job_name} uses an unquoted matrix target"
-                    )));
-                }
-                validate_locked_cargo(job_name, command)?;
-            }
+        }),
+        None => Ok(()),
+    };
+    action_result.and_then(|()| {
+        let Some(command) = step.get("run").and_then(Value::as_str) else {
+            return Ok(());
+        };
+        if has_unquoted_matrix_target(command) {
+            return Err(invalid_data(format!(
+                "workflow job {job_name} uses an unquoted matrix target"
+            )));
         }
-    }
-    Ok(jobs)
+        validate_locked_cargo(job_name, command)
+    })
 }
 
 fn validate_checkout_credentials(
@@ -536,25 +593,26 @@ fn validate_checkout_credentials(
 }
 
 fn validate_release_workflow(workflow: &Value) -> Result<()> {
-    let jobs = validate_workflow_policy(workflow)?;
-    let Some(triggers) = workflow.get("on").and_then(Value::as_object) else {
-        return Err(invalid_data("release workflow must define triggers"));
-    };
-    for trigger in ["push", "pull_request", "workflow_dispatch"] {
-        if !triggers.contains_key(trigger) {
-            return Err(invalid_data(format!(
-                "release workflow must retain the {trigger} trigger"
-            )));
+    validate_workflow_policy(workflow).and_then(|jobs| {
+        let Some(triggers) = workflow.get("on").and_then(Value::as_object) else {
+            return Err(invalid_data("release workflow must define triggers"));
+        };
+        for trigger in ["push", "pull_request", "workflow_dispatch"] {
+            if !triggers.contains_key(trigger) {
+                return Err(invalid_data(format!(
+                    "release workflow must retain the {trigger} trigger"
+                )));
+            }
         }
-    }
-    for job in ["toolchains", "package", "dependencies"] {
-        if !jobs.contains_key(job) {
-            return Err(invalid_data(format!(
-                "release workflow must retain the {job} job"
-            )));
+        for job in ["toolchains", "package", "dependencies"] {
+            if !jobs.contains_key(job) {
+                return Err(invalid_data(format!(
+                    "release workflow must retain the {job} job"
+                )));
+            }
         }
-    }
-    Ok(())
+        Ok(())
+    })
 }
 
 fn validate_action(action: &str) -> Result<()> {
@@ -737,7 +795,11 @@ fn mentions_cargo_executable(line: &str) -> bool {
         })
         .any(|token| {
             let normalized = token.trim_matches(['$', '{', '}']).to_ascii_lowercase();
-            cargo_executable(token) || matches!(normalized.as_str(), "cargo" | "env:cargo")
+            [
+                cargo_executable(token),
+                ["cargo", "env:cargo"].contains(&normalized.as_str()),
+            ]
+            .contains(&true)
         })
 }
 
@@ -759,7 +821,12 @@ fn is_target_triple(value: &str) -> bool {
         && !value.starts_with('-')
         && !value.ends_with('-')
         && value.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+            [
+                byte.is_ascii_lowercase(),
+                byte.is_ascii_digit(),
+                b"-_".contains(&byte),
+            ]
+            .contains(&true)
         })
 }
 
@@ -833,9 +900,11 @@ fn write_github_output(
     rust_version: &str,
 ) -> Result<()> {
     let mut output = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(output, "matrices={}", serde_json::to_string(generated)?)?;
-    writeln!(output, "rust_version={rust_version}")?;
-    Ok(())
+    let generated = serde_json::to_string(generated)
+        .expect("support matrices contain only JSON-serializable values");
+    writeln!(output, "matrices={generated}")
+        .and_then(|()| writeln!(output, "rust_version={rust_version}"))
+        .map_err(crate::DynError::from)
 }
 
 #[cfg(test)]

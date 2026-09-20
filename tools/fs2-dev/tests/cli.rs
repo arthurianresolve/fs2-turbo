@@ -26,6 +26,18 @@ fn command() -> Command {
     command
 }
 
+#[cfg(coverage)]
+#[test]
+fn standalone_coverage_fixture_executes_capture_stage_failures() {
+    let output = command()
+        .env("FS2_DEV_COVERAGE_CAPTURE_STAGE_FAILURES", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+}
+
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -798,13 +810,23 @@ fn native_cargo_failures_preserve_output_and_timeout_cleanup() {
 
 #[test]
 fn compatibility_command_runs_the_frozen_legacy_and_current_consumers() {
-    let output = command().arg("compatibility").output().unwrap();
-    assert_success(&output);
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    assert!(stdout.contains("v0.4 consumer sha256="));
-    for subject in ["legacy", "current"] {
-        for edition in ["2015", "2018", "2021", "2024"] {
-            assert!(stdout.contains(&format!("run {subject} v0.4 consumer in edition {edition}")));
+    for remove_toolchain_override in [false, true] {
+        let mut invocation = command();
+        invocation.arg("compatibility");
+        if remove_toolchain_override {
+            invocation.env_remove("RUSTUP_TOOLCHAIN");
+            invocation.env_remove("CARGO");
+        }
+        let output = invocation.output().unwrap();
+        assert_success(&output);
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains("v0.4 consumer sha256="));
+        for subject in ["legacy", "current"] {
+            for edition in ["2015", "2018", "2021", "2024"] {
+                assert!(
+                    stdout.contains(&format!("run {subject} v0.4 consumer in edition {edition}"))
+                );
+            }
         }
     }
 }
