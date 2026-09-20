@@ -325,12 +325,10 @@ pub(crate) fn run(
     let integration_data = single_data(&integration_export, "integration")?;
 
     validate(target, policy, &data.totals, physical_lines)?;
-    let combined_diagnostics = instantiation_diagnostics(data)?;
-    let unit_diagnostics = instantiation_diagnostics(unit_data)?;
-    let integration_diagnostics = instantiation_diagnostics(integration_data)?;
-    let combined_groups = definition_groups(data)?;
-    let unit_groups = definition_groups(unit_data)?;
-    let integration_groups = definition_groups(integration_data)?;
+    let (combined_diagnostics, combined_groups) = instantiation_diagnostics(data)?;
+    let (unit_diagnostics, unit_groups) = instantiation_diagnostics(unit_data)?;
+    let (integration_diagnostics, integration_groups) =
+        instantiation_diagnostics(integration_data)?;
     validate_source_definition_completeness(target, "combined", &combined_diagnostics)?;
     validate_source_definition_completeness(target, "unit", &unit_diagnostics)?;
     let intended_integration_definitions =
@@ -429,9 +427,16 @@ fn print_instantiation_diagnostics(
     }
 }
 
-fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnostics> {
+fn instantiation_diagnostics(
+    data: &CoverageData,
+) -> Result<(
+    InstantiationDiagnostics,
+    BTreeMap<DefinitionKey, DefinitionGroupState>,
+)> {
     let groups = definition_groups(data)?;
-    let mut entry_count = 0_u64;
+    // Counts are bounded by the allocated functions vector, not by input counters.
+    const { assert!(usize::BITS <= u64::BITS) };
+    let entry_count = data.functions.len() as u64;
     let mut executed_entries = 0_u64;
     let mut workspace_entry_count = 0_u64;
     let mut executed_workspace_entries = 0_u64;
@@ -439,36 +444,21 @@ fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnos
     let mut executed_external_entries = 0_u64;
 
     for function in &data.functions {
-        entry_count = entry_count
-            .checked_add(1)
-            .ok_or_else(|| invalid_data("coverage function-entry count overflowed"))?;
         let workspace_owned = function
             .filenames
             .first()
             .is_some_and(|filename| normalize_source_path(filename).is_some());
         if workspace_owned {
-            workspace_entry_count = workspace_entry_count.checked_add(1).ok_or_else(|| {
-                invalid_data("coverage workspace function-entry count overflowed")
-            })?;
+            workspace_entry_count += 1;
         } else {
-            external_entry_count = external_entry_count
-                .checked_add(1)
-                .ok_or_else(|| invalid_data("coverage external function-entry count overflowed"))?;
+            external_entry_count += 1;
         }
         if function.count != 0 {
-            executed_entries = executed_entries
-                .checked_add(1)
-                .ok_or_else(|| invalid_data("coverage executed-entry count overflowed"))?;
+            executed_entries += 1;
             if workspace_owned {
-                executed_workspace_entries =
-                    executed_workspace_entries.checked_add(1).ok_or_else(|| {
-                        invalid_data("coverage executed workspace-entry count overflowed")
-                    })?;
+                executed_workspace_entries += 1;
             } else {
-                executed_external_entries =
-                    executed_external_entries.checked_add(1).ok_or_else(|| {
-                        invalid_data("coverage executed external-entry count overflowed")
-                    })?;
+                executed_external_entries += 1;
             }
         }
     }
@@ -497,27 +487,26 @@ fn instantiation_diagnostics(data: &CoverageData) -> Result<InstantiationDiagnos
         .map(|(key, _)| definition_id(key))
         .collect();
 
-    Ok(InstantiationDiagnostics {
+    let diagnostics = InstantiationDiagnostics {
         entry_count,
         executed_entries,
         workspace_entry_count,
         executed_workspace_entries,
         external_entry_count,
         executed_external_entries,
-        definition_groups: groups.len().try_into()?,
+        definition_groups: groups.len() as u64,
         covered_definition_groups: groups
             .values()
             .filter(|state| state.covered_entries != 0)
-            .count()
-            .try_into()?,
+            .count() as u64,
         asymmetric_definition_groups: groups
             .values()
             .filter(|state| state.covered_entries != 0 && state.covered_entries < state.entries)
-            .count()
-            .try_into()?,
+            .count() as u64,
         uncovered_definition_groups,
         file_gaps,
-    })
+    };
+    Ok((diagnostics, groups))
 }
 
 fn definition_groups(data: &CoverageData) -> Result<BTreeMap<DefinitionKey, DefinitionGroupState>> {
@@ -531,15 +520,11 @@ fn definition_groups(data: &CoverageData) -> Result<BTreeMap<DefinitionKey, Defi
             covered_entries: 0,
             symbols: BTreeSet::new(),
         });
-        group.entries = group
-            .entries
-            .checked_add(1)
-            .ok_or_else(|| invalid_data("coverage definition-group count overflowed"))?;
+        // A group's counts cannot exceed the number of allocated function entries.
+        const { assert!(usize::BITS <= u64::BITS) };
+        group.entries += 1;
         if function.count != 0 {
-            group.covered_entries = group
-                .covered_entries
-                .checked_add(1)
-                .ok_or_else(|| invalid_data("coverage covered-group count overflowed"))?;
+            group.covered_entries += 1;
         }
         group.symbols.insert(function.name.clone());
     }
@@ -560,9 +545,8 @@ fn definition_key(function: &FunctionCoverage) -> Result<Option<DefinitionKey>> 
     else {
         return Ok(None);
     };
-    let (Some(&line), Some(&column)) = (start.first(), start.get(1)) else {
-        return Ok(None);
-    };
+    // Finding element 7 above establishes the bounds for both coordinates.
+    let (line, column) = (start[0], start[1]);
     let regions = function
         .regions
         .iter()
@@ -698,7 +682,8 @@ fn validate_intended_integration_definitions(
         )));
     }
 
-    let count = intended.len().try_into()?;
+    const { assert!(usize::BITS <= u64::BITS) };
+    let count = intended.len() as u64;
     Ok(Metric {
         count,
         covered: count,
@@ -723,7 +708,7 @@ fn write_diagnostics_report<const N: usize>(
         .into_iter()
         .map(|(profile, data, groups, diagnostics, unit_groups)| {
             let source_location_execution_union =
-                source_locations::summarize(target, profile, groups, unit_groups)?;
+                source_locations::summarize(target, profile, groups, unit_groups);
             let definitions = groups
                 .iter()
                 .map(|(key, state)| {
@@ -753,7 +738,7 @@ fn write_diagnostics_report<const N: usize>(
                     }
                 })
                 .collect();
-            Ok(ProfileDiagnosticsReport {
+            ProfileDiagnosticsReport {
                 profile,
                 llvm_instantiations: data.totals.instantiations,
                 json_entries: Metric {
@@ -776,9 +761,9 @@ fn write_diagnostics_report<const N: usize>(
                 asymmetric_definition_groups: diagnostics.asymmetric_definition_groups,
                 definitions,
                 file_gaps: &diagnostics.file_gaps,
-            })
+            }
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
     let report = CoverageDiagnosticsReport {
         schema_version: 4,
         target,
@@ -845,13 +830,10 @@ fn parse_lcov(contents: &str) -> Result<PhysicalLines> {
             "LCOV report contains no physical source lines",
         ));
     }
+    const { assert!(usize::BITS <= u64::BITS) };
     Ok(PhysicalLines {
-        count: lines.len().try_into()?,
-        covered: lines
-            .values()
-            .filter(|count| **count != 0)
-            .count()
-            .try_into()?,
+        count: lines.len() as u64,
+        covered: lines.values().filter(|count| **count != 0).count() as u64,
     })
 }
 
@@ -999,6 +981,589 @@ mod tests {
     use super::*;
 
     #[test]
+    fn integration_profiles_propagate_missing_intended_definition_errors() {
+        assert!(
+            validate_integration_instantiations(
+                "unsupported-target",
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+            )
+            .is_err()
+        );
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+        ] {
+            assert!(
+                validate_integration_instantiations(target, &BTreeMap::new(), &BTreeMap::new())
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn three_profile_reports_preserve_unit_owned_integration_residuals() {
+        let target = "x86_64-unknown-linux-gnu";
+        let directory = tempfile::tempdir().unwrap();
+        let combined = directory.path().join("combined.json");
+        let unit = directory.path().join("unit.json");
+        let integration = directory.path().join("integration.json");
+        let lcov = directory.path().join("coverage.lcov");
+        let report_path = directory.path().join("diagnostics.json");
+
+        // Synthetic exports test report ownership, not measured library coverage.
+        for (path, hits) in [(&combined, 1), (&unit, 1), (&integration, 0)] {
+            let mut export = fixture_export(target);
+            export["data"][0]["functions"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "name": "private-fixture",
+                    "count": hits,
+                    "filenames": ["src/private_fixture.rs"],
+                    "regions": [[999, 1, 999, 2, hits, 0, 0, 0]]
+                }));
+            fs::write(path, export.to_string()).unwrap();
+        }
+        let mut lines = String::from("SF:src/synthetic_fixture.rs\n");
+        for line in 1..=policy_for_target(target).unwrap().minimum_unique_lines {
+            use std::fmt::Write as _;
+            writeln!(lines, "DA:{line},1").unwrap();
+        }
+        lines.push_str("end_of_record\n");
+        fs::write(&lcov, lines).unwrap();
+        run(target, &combined, &lcov, &unit, &integration, &report_path).unwrap();
+
+        let report: serde_json::Value =
+            serde_json::from_slice(&fs::read(report_path).unwrap()).unwrap();
+        let profiles = report["profiles"].as_array().unwrap();
+        assert_eq!(profiles.len(), 3);
+        for profile in profiles {
+            let residual = profile["definitions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|entry| entry["source"] == "src/private_fixture.rs")
+                .unwrap();
+            let integration = profile["profile"] == "integration";
+            assert_eq!(
+                residual["ownership"],
+                if integration {
+                    "private-unit"
+                } else {
+                    "covered"
+                }
+            );
+            assert_eq!(residual["covered_entries"], u64::from(!integration));
+        }
+    }
+
+    #[test]
+    fn diagnostics_preserve_external_execution_and_every_ownership_state() {
+        let target = "x86_64-unknown-linux-gnu";
+        let mut fixture = fixture_export(target);
+        fixture["data"][0]["functions"] = serde_json::json!([
+            {"name":"unowned","count":0,"filenames":["src/fixture.rs"],"regions":[[3,1,4,2,0,0,0,0]]},
+            {"name":"partial-zero","count":0,"filenames":["src/fixture.rs"],"regions":[[7,1,8,2,0,0,0,0]]},
+            {"name":"partial-executed","count":1,"filenames":["src/fixture.rs"],"regions":[[7,1,8,2,1,0,0,0]]},
+            {"name":"complete","count":1,"filenames":["src/fixture.rs"],"regions":[[11,1,12,2,1,0,0,0]]},
+            {"name":"external","count":1,"filenames":["/rustc/toolchain/core.rs"],"regions":[[99,1,100,2,1,0,0,0]]},
+            {"name":"no-file","count":0,"filenames":[],"regions":[]}
+        ]);
+        let export = parse_json(&fixture.to_string()).unwrap();
+        let data = &export.data[0];
+        let groups = definition_groups(data).unwrap();
+        let diagnostics = instantiation_diagnostics(data).unwrap().0;
+        assert_eq!(
+            (diagnostics.entry_count, diagnostics.executed_entries),
+            (6, 3)
+        );
+        assert_eq!(
+            (
+                diagnostics.workspace_entry_count,
+                diagnostics.executed_workspace_entries
+            ),
+            (4, 2)
+        );
+        assert_eq!(
+            (
+                diagnostics.external_entry_count,
+                diagnostics.executed_external_entries
+            ),
+            (2, 1)
+        );
+        assert_eq!(diagnostics.asymmetric_definition_groups, 1);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("ownership.json");
+        write_diagnostics_report(
+            &path,
+            target,
+            Metric {
+                count: 0,
+                covered: 0,
+            },
+            [("integration", data, &groups, &diagnostics, None)],
+        )
+        .unwrap();
+        let report: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let ownership = report["profiles"][0]["definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["ownership"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(ownership, ["unowned", "compiler-asymmetric", "covered"]);
+    }
+
+    #[test]
+    fn an_unexecuted_unit_group_does_not_own_an_integration_residual() {
+        let target = "x86_64-unknown-linux-gnu";
+        let export = parse_json(&fixture_export(target).to_string()).unwrap();
+        let mut integration = definition_groups(&export.data[0]).unwrap();
+        let key = DefinitionKey {
+            filename: "src/residual.rs".to_owned(),
+            line: 999,
+            column: 1,
+            regions: Vec::new(),
+        };
+        integration.insert(
+            key.clone(),
+            DefinitionGroupState {
+                entries: 1,
+                covered_entries: 0,
+                symbols: BTreeSet::new(),
+            },
+        );
+        let mut units = definition_groups(&export.data[0]).unwrap();
+        units.insert(
+            key.clone(),
+            DefinitionGroupState {
+                entries: 1,
+                covered_entries: 0,
+                symbols: BTreeSet::new(),
+            },
+        );
+        assert!(validate_integration_instantiations(target, &units, &integration).is_err());
+        units.get_mut(&key).unwrap().covered_entries = 1;
+        validate_integration_instantiations(target, &units, &integration).unwrap();
+    }
+
+    // Synthetic contract fixtures are not coverage measurements.
+    fn fixture_export(target: &str) -> serde_json::Value {
+        let policy = policy_for_target(target).unwrap();
+        let complete = |count| serde_json::json!({ "count": count, "covered": count });
+        let functions = INTENDED_INTEGRATION_DEFINITIONS
+            .iter()
+            .chain(
+                WINDOWS_INTEGRATION_DEFINITIONS
+                    .iter()
+                    .filter(|_| target == "x86_64-pc-windows-msvc"),
+            )
+            .map(|definition| {
+                let (source, column) = definition.source.rsplit_once(':').unwrap();
+                let (filename, line) = source.rsplit_once(':').unwrap();
+                let line: u64 = line.parse().unwrap();
+                let column: u64 = column.parse().unwrap();
+                serde_json::json!({
+                    "name": definition.api,
+                    "count": 1,
+                    "filenames": [filename],
+                    "regions": [[line, column, line, column + 1, 1, 0, 0, 0]]
+                })
+            })
+            .collect::<Vec<_>>();
+        let instantiations = u64::try_from(functions.len()).unwrap();
+        serde_json::json!({
+            "type": LLVM_COVERAGE_EXPORT,
+            "data": [{
+                "files": [],
+                "functions": functions,
+                "totals": {
+                    "functions": complete(policy.minimum_functions),
+                    "instantiations": complete(instantiations),
+                    "lines": complete(policy.minimum_aggregate_lines),
+                    "regions": complete(policy.minimum_regions)
+                }
+            }]
+        })
+    }
+
+    #[test]
+    fn json_requires_the_export_schema_and_one_data_set() {
+        let valid = fixture_export("x86_64-unknown-linux-gnu");
+        let parsed = parse_json(&valid.to_string()).unwrap();
+        single_data(&parsed, "combined").unwrap();
+        let mut wrong_kind = valid.clone();
+        wrong_kind["type"] = serde_json::json!("unreviewed.export");
+        assert!(parse_json(&wrong_kind.to_string()).is_err());
+        for invalid in ["{", "null", r#"{"type":"llvm.coverage.json.export"}"#] {
+            assert!(parse_json(invalid).is_err(), "{invalid}");
+        }
+        for count in [0, 2] {
+            let mut value = valid.clone();
+            value["data"] = serde_json::Value::Array(vec![valid["data"][0].clone(); count]);
+            let export = parse_json(&value.to_string()).unwrap();
+            let error = single_data(&export, "unit").unwrap_err().to_string();
+            assert!(error.contains("unit coverage JSON must contain exactly one data set"));
+        }
+    }
+
+    #[test]
+    fn malformed_lcov_is_rejected_with_record_context() {
+        for (contents, expected) in [
+            ("", "no physical source lines"),
+            ("SF:\n", "source path is empty on line 1"),
+            ("DA:1,1\n", "precedes a source record on line 1"),
+            (
+                "SF:src/lib.rs\nend_of_record\nDA:1,1\n",
+                "precedes a source record on line 3",
+            ),
+            (
+                "SF:src/lib.rs\nDA:1\n",
+                "execution count is missing on line 2",
+            ),
+            ("SF:src/lib.rs\nDA:,1\n", "line number is invalid on line 2"),
+            (
+                "SF:src/lib.rs\nDA:1,no\n",
+                "execution count is invalid on line 2",
+            ),
+            (
+                "SF:src/lib.rs\nDA:18446744073709551616,1\n",
+                "line number is invalid",
+            ),
+        ] {
+            let error = parse_lcov(contents).unwrap_err().to_string();
+            assert!(error.contains(expected), "{error}");
+        }
+        assert!(parse_lcov_number(None, 0, "line number").is_err());
+        assert_eq!(
+            parse_lcov("SF:src/lib.rs\r\nDA:1,0\r\nDA:1,5\r\nDA:1,2\r\n").unwrap(),
+            PhysicalLines {
+                count: 1,
+                covered: 1
+            }
+        );
+    }
+
+    #[test]
+    fn every_metric_floor_and_completeness_check_is_enforced() {
+        let target = "x86_64-unknown-linux-gnu";
+        let policy = policy_for_target(target).unwrap();
+        let fixture = fixture_export(target);
+        let total_value = &fixture["data"][0]["totals"];
+        let physical = PhysicalLines {
+            count: policy.minimum_unique_lines,
+            covered: policy.minimum_unique_lines,
+        };
+        let totals: Totals = serde_json::from_value(total_value.clone()).unwrap();
+        validate(target, policy, &totals, physical).unwrap();
+        for invalid in [
+            PhysicalLines {
+                count: 0,
+                covered: 0,
+            },
+            PhysicalLines {
+                covered: physical.covered - 1,
+                ..physical
+            },
+            PhysicalLines {
+                covered: physical.covered + 1,
+                ..physical
+            },
+        ] {
+            assert!(validate(target, policy, &totals, invalid).is_err());
+        }
+        for (pointer, replacement) in [
+            ("/lines/count", 0),
+            ("/lines/covered", 0),
+            ("/lines/covered", u64::MAX),
+            ("/regions/count", 0),
+            ("/regions/covered", 0),
+            ("/regions/covered", u64::MAX),
+            ("/functions/count", 0),
+            ("/functions/covered", 0),
+            ("/functions/covered", u64::MAX),
+            ("/instantiations/covered", u64::MAX),
+        ] {
+            let mut altered = total_value.clone();
+            *altered.pointer_mut(pointer).unwrap() = serde_json::json!(replacement);
+            let totals = serde_json::from_value(altered).unwrap();
+            assert!(
+                validate(target, policy, &totals, physical).is_err(),
+                "{pointer}"
+            );
+        }
+        assert!(policy_for_target("unknown-target").is_err());
+        assert!(integration_policy_for_target("unknown-target").is_err());
+    }
+
+    #[test]
+    fn definition_keys_reject_malformed_regions_without_claiming_external_sources() {
+        let fixture = fixture_export("x86_64-unknown-linux-gnu");
+        let original = fixture["data"][0]["functions"][0].clone();
+        for (field, value) in [
+            ("filenames", serde_json::json!([])),
+            ("filenames", serde_json::json!(["/rustc/library/core.rs"])),
+            ("regions", serde_json::json!([])),
+            ("regions", serde_json::json!([[1, 1, 2, 1, 0, 0, 0, 1]])),
+        ] {
+            let mut function = original.clone();
+            function[field] = value;
+            let function = serde_json::from_value(function).unwrap();
+            assert!(definition_key(&function).unwrap().is_none());
+        }
+        let mut function: FunctionCoverage = serde_json::from_value(original).unwrap();
+        function.regions.push(vec![1]);
+        assert!(definition_key(&function).is_err());
+        assert_eq!(
+            normalize_source_path("./tests/api.rs"),
+            Some("tests/api.rs".to_owned())
+        );
+    }
+
+    #[test]
+    fn intended_definitions_must_have_unique_names_and_locations() {
+        let first = IntendedIntegrationDefinition {
+            api: "first",
+            source: "src/lib.rs:1:1",
+        };
+        for duplicate in [
+            IntendedIntegrationDefinition {
+                api: "first",
+                source: "src/lib.rs:2:1",
+            },
+            IntendedIntegrationDefinition {
+                api: "second",
+                source: "src/lib.rs:1:1",
+            },
+        ] {
+            let error = validate_intended_integration_definitions(
+                "test-target",
+                &[first, duplicate],
+                &BTreeMap::new(),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("duplicate intended integration definition"));
+        }
+    }
+
+    #[test]
+    fn integration_residuals_require_executed_unit_ownership() {
+        let target = "x86_64-unknown-linux-gnu";
+        let value = fixture_export(target);
+        let export = parse_json(&value.to_string()).unwrap();
+        let mut units = definition_groups(single_data(&export, "unit").unwrap()).unwrap();
+        let mut integrations =
+            definition_groups(single_data(&export, "integration").unwrap()).unwrap();
+        let key = DefinitionKey {
+            filename: "src/private_fixture.rs".to_owned(),
+            line: 1,
+            column: 1,
+            regions: vec![(1, 1, 1, 2, 0)],
+        };
+        integrations.insert(
+            key.clone(),
+            DefinitionGroupState {
+                entries: 1,
+                covered_entries: 0,
+                symbols: BTreeSet::from(["private_fixture".to_owned()]),
+            },
+        );
+        assert!(validate_integration_instantiations(target, &units, &integrations).is_err());
+        units.insert(
+            key.clone(),
+            DefinitionGroupState {
+                entries: 1,
+                covered_entries: 0,
+                symbols: BTreeSet::from(["private_fixture".to_owned()]),
+            },
+        );
+        assert!(validate_integration_instantiations(target, &units, &integrations).is_err());
+        units.get_mut(&key).unwrap().covered_entries = 1;
+        validate_integration_instantiations(target, &units, &integrations).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_sort_file_gaps_and_reject_impossible_totals() {
+        let mut fixture = fixture_export("x86_64-unknown-linux-gnu");
+        fixture["data"][0]["files"] = serde_json::json!([
+            {"filename":"src/z.rs","summary":{"instantiations":{"count":3,"covered":2}}},
+            {"filename":"src/b.rs","summary":{"instantiations":{"count":3,"covered":1}}},
+            {"filename":"src/a.rs","summary":{"instantiations":{"count":3,"covered":1}}}
+        ]);
+        fixture["data"][0]["functions"][0]["count"] = serde_json::json!(0);
+        let mut export = parse_json(&fixture.to_string()).unwrap();
+        let data = &mut export.data[0];
+        let diagnostics = instantiation_diagnostics(data).unwrap().0;
+        assert_eq!(
+            diagnostics
+                .file_gaps
+                .iter()
+                .map(|gap| gap.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["src/a.rs", "src/b.rs", "src/z.rs"]
+        );
+        assert_eq!(diagnostics.uncovered_definition_groups.len(), 1);
+        print_instantiation_diagnostics("fixture", "unit", data, &diagnostics);
+        assert!(validate_source_definition_completeness("fixture", "unit", &diagnostics).is_err());
+        data.files[0].summary.instantiations.covered = 4;
+        assert!(instantiation_diagnostics(data).is_err());
+    }
+
+    #[test]
+    fn native_coverage_command_writes_all_profiles_and_propagates_output_errors() {
+        for target in [
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+            "aarch64-apple-darwin",
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let json = directory.path().join("combined.json");
+            let unit = directory.path().join("unit.json");
+            let integration = directory.path().join("integration.json");
+            let lcov = directory.path().join("coverage.lcov");
+            let diagnostics = directory.path().join("diagnostics.json");
+            let encoded = fixture_export(target).to_string();
+            for path in [&json, &unit, &integration] {
+                fs::write(path, &encoded).unwrap();
+            }
+            let policy = policy_for_target(target).unwrap();
+            let mut lines = String::from("SF:src/synthetic_fixture.rs\n");
+            for line in 1..=policy.minimum_unique_lines {
+                use std::fmt::Write as _;
+                writeln!(lines, "DA:{line},1").unwrap();
+            }
+            lines.push_str("end_of_record\n");
+            fs::write(&lcov, lines).unwrap();
+            run(target, &json, &lcov, &unit, &integration, &diagnostics).unwrap();
+            let report: serde_json::Value =
+                serde_json::from_slice(&fs::read(&diagnostics).unwrap()).unwrap();
+            assert_eq!(report["schema_version"], 4);
+            assert_eq!(report["target"], target);
+            assert_eq!(report["profiles"].as_array().unwrap().len(), 3);
+            for (profile, expected) in report["profiles"].as_array().unwrap().iter().zip([
+                "combined",
+                "unit",
+                "integration",
+            ]) {
+                assert_eq!(profile["profile"], expected);
+                assert_eq!(
+                    profile["source_definitions"]["count"],
+                    profile["source_definitions"]["covered"]
+                );
+            }
+            assert!(run(target, &json, &lcov, &unit, &integration, directory.path()).is_err());
+            fs::write(&unit, r#"{"type":"llvm.coverage.json.export","data":[]}"#).unwrap();
+            let error = run(target, &json, &lcov, &unit, &integration, &diagnostics)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("unit coverage JSON must contain exactly one data set"));
+        }
+    }
+
+    #[test]
+    fn rejected_coverage_inputs_preserve_the_previous_diagnostic_report() {
+        let target = "x86_64-unknown-linux-gnu";
+        let directory = tempfile::tempdir().unwrap();
+        let combined = directory.path().join("combined.json");
+        let unit = directory.path().join("unit.json");
+        let integration = directory.path().join("integration.json");
+        let lcov = directory.path().join("coverage.lcov");
+        let diagnostics = directory.path().join("diagnostics.json");
+        let fixture = fixture_export(target);
+        let encoded = fixture.to_string();
+        let policy = policy_for_target(target).unwrap();
+        let mut lines = String::from("SF:src/synthetic_fixture.rs\n");
+        for line in 1..=policy.minimum_unique_lines {
+            use std::fmt::Write as _;
+            writeln!(lines, "DA:{line},1").unwrap();
+        }
+        lines.push_str("end_of_record\n");
+        for path in [&combined, &unit, &integration] {
+            fs::write(path, &encoded).unwrap();
+        }
+        fs::write(&lcov, &lines).unwrap();
+        run(target, &combined, &lcov, &unit, &integration, &diagnostics).unwrap();
+        let sentinel = b"previous diagnostic report";
+        fs::write(&diagnostics, sentinel).unwrap();
+        let reject = || {
+            let error =
+                run(target, &combined, &lcov, &unit, &integration, &diagnostics).unwrap_err();
+            assert_eq!(fs::read(&diagnostics).unwrap(), sentinel);
+            error
+        };
+
+        for path in [&combined, &unit, &integration, &lcov] {
+            fs::remove_file(path).unwrap();
+            assert_eq!(
+                reject().downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::NotFound
+            );
+            if path == &lcov {
+                fs::write(
+                    path,
+                    "SF:src/synthetic_fixture.rs\nDA:1,bad\nend_of_record\n",
+                )
+                .unwrap();
+                assert!(reject().to_string().contains("execution count is invalid"));
+                fs::write(path, &lines).unwrap();
+            } else {
+                fs::write(path, "not JSON").unwrap();
+                reject();
+                fs::write(path, &encoded).unwrap();
+            }
+        }
+
+        for (profile, path) in [
+            ("combined", &combined),
+            ("unit", &unit),
+            ("integration", &integration),
+        ] {
+            for data in [
+                serde_json::json!([]),
+                serde_json::json!([fixture["data"][0].clone(), fixture["data"][0].clone()]),
+            ] {
+                let mut altered = fixture.clone();
+                altered["data"] = data;
+                fs::write(path, altered.to_string()).unwrap();
+                assert!(reject().to_string().contains(&format!(
+                    "{profile} coverage JSON must contain exactly one data set"
+                )));
+            }
+
+            let mut altered = fixture.clone();
+            altered["data"][0]["functions"][0]["regions"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!([0]));
+            fs::write(path, altered.to_string()).unwrap();
+            assert!(reject().to_string().contains("malformed region"));
+
+            let mut altered = fixture.clone();
+            altered["data"][0]["files"] = serde_json::json!([{
+                "filename": "src/synthetic_fixture.rs",
+                "summary": {"instantiations": {"count": 0, "covered": 1}}
+            }]);
+            fs::write(path, altered.to_string()).unwrap();
+            assert!(reject().to_string().contains("file instantiations"));
+
+            let mut altered = fixture.clone();
+            altered["data"][0]["functions"][0]["count"] = serde_json::json!(0);
+            altered["data"][0]["functions"][0]["regions"][0][4] = serde_json::json!(0);
+            fs::write(path, altered.to_string()).unwrap();
+            reject();
+            fs::write(path, &encoded).unwrap();
+        }
+
+        let mut altered = fixture;
+        altered["data"][0]["totals"]["lines"]["covered"] = serde_json::json!(0);
+        fs::write(&combined, altered.to_string()).unwrap();
+        reject();
+    }
+
+    #[test]
     fn lcov_uses_the_union_of_physical_source_lines() {
         let lines = parse_lcov(
             "SF:src/lib.rs\nDA:7,0\nDA:8,0\nend_of_record\nSF:src/lib.rs\nDA:7,3\nend_of_record\n",
@@ -1122,7 +1687,7 @@ mod tests {
         };
 
         assert_eq!(
-            instantiation_diagnostics(&data).unwrap(),
+            instantiation_diagnostics(&data).unwrap().0,
             InstantiationDiagnostics {
                 entry_count: 4,
                 executed_entries: 1,

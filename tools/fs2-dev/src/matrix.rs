@@ -158,10 +158,7 @@ fn validate_workflow_directory(root: &Path, registry: &SupportRegistry) -> Resul
                 path.display()
             )));
         }
-        let name = path
-            .file_name()
-            .and_then(OsStr::to_str)
-            .ok_or_else(|| invalid_data("workflow file name is not valid Unicode"))?;
+        let name = workflow_file_name(&path)?;
         let workflow = load_workflow(&path)?;
         match name {
             "ci.yml" => {
@@ -172,7 +169,9 @@ fn validate_workflow_directory(root: &Path, registry: &SupportRegistry) -> Resul
                 validate_release_workflow(&workflow)?;
                 found_release_gates = true;
             }
-            _ => validate_workflow_policy(&workflow)?,
+            _ => {
+                validate_workflow_policy(&workflow)?;
+            }
         }
     }
 
@@ -197,6 +196,13 @@ fn workflow_entry_is_windows_reparse_point(_path: &Path) -> Result<bool> {
     Ok(false)
 }
 
+fn workflow_file_name(path: &Path) -> Result<&str> {
+    let Some(name) = path.file_name().and_then(OsStr::to_str) else {
+        return Err(invalid_data("workflow file name is not valid Unicode"));
+    };
+    Ok(name)
+}
+
 fn load_registry(path: &Path) -> Result<SupportRegistry> {
     Ok(serde_json::from_str(&fs::read_to_string(path)?)?)
 }
@@ -211,13 +217,22 @@ fn package_rust_version(root: &Path) -> Result<String> {
         .current_dir(root)
         .args(["metadata", "--no-deps", "--format-version", "1", "--locked"]);
     let output = process::capture(&mut command, "read fs2-turbo package metadata")?;
-    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
-    metadata
+    rust_version_from_metadata(&output.stdout)
+}
+
+fn rust_version_from_metadata(bytes: &[u8]) -> Result<String> {
+    let metadata: CargoMetadata = serde_json::from_slice(bytes)?;
+    let Some(version) = metadata
         .packages
         .into_iter()
         .find(|package| package.name == "fs2-turbo")
         .and_then(|package| package.rust_version)
-        .ok_or_else(|| invalid_data("cargo metadata did not provide fs2-turbo rust-version"))
+    else {
+        return Err(invalid_data(
+            "cargo metadata did not provide fs2-turbo rust-version",
+        ));
+    };
+    Ok(version)
 }
 
 fn validate_registry(registry: &SupportRegistry, rust_version: &str) -> Result<()> {
@@ -289,10 +304,12 @@ fn validate_registry(registry: &SupportRegistry, rust_version: &str) -> Result<(
                 entry.target
             )));
         }
-        let ci = entry
-            .ci
-            .as_ref()
-            .ok_or_else(|| invalid_data(format!("CI metadata missing for {}", entry.target)))?;
+        let Some(ci) = entry.ci.as_ref() else {
+            return Err(invalid_data(format!(
+                "CI metadata missing for {}",
+                entry.target
+            )));
+        };
         if !is_ci_job_name(&ci.job) {
             return Err(invalid_data(format!(
                 "invalid CI job name for {}",
@@ -385,18 +402,12 @@ fn matrices(registry: &SupportRegistry) -> BTreeMap<String, Matrix> {
 }
 
 fn validate_workflow(registry: &SupportRegistry, workflow: &Value) -> Result<()> {
-    validate_workflow_policy(workflow)?;
-    let jobs = workflow
-        .get("jobs")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("workflow must define a jobs object"))?;
+    let jobs = validate_workflow_policy(workflow)?;
     let generated = matrices(registry);
     let declared = generated.keys().map(String::as_str).collect::<HashSet<_>>();
 
     for (job_name, job) in jobs {
-        let job = job
-            .as_object()
-            .ok_or_else(|| invalid_data(format!("workflow job {job_name} must be an object")))?;
+        let job = job.as_object().expect("workflow policy validated each job");
         let configured = job
             .get("strategy")
             .and_then(Value::as_object)
@@ -433,10 +444,9 @@ fn validate_workflow(registry: &SupportRegistry, workflow: &Value) -> Result<()>
         )));
     }
 
-    let triggers = workflow
-        .get("on")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("workflow must define triggers"))?;
+    let Some(triggers) = workflow.get("on").and_then(Value::as_object) else {
+        return Err(invalid_data("workflow must define triggers"));
+    };
     if !triggers.contains_key("workflow_dispatch") {
         return Err(invalid_data("workflow must retain a manual trigger"));
     }
@@ -446,25 +456,27 @@ fn validate_workflow(registry: &SupportRegistry, workflow: &Value) -> Result<()>
     Ok(())
 }
 
-fn validate_workflow_policy(workflow: &Value) -> Result<()> {
-    let permissions = workflow
-        .get("permissions")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("workflow must declare top-level token permissions"))?;
+fn validate_workflow_policy(workflow: &Value) -> Result<&serde_json::Map<String, Value>> {
+    let Some(permissions) = workflow.get("permissions").and_then(Value::as_object) else {
+        return Err(invalid_data(
+            "workflow must declare top-level token permissions",
+        ));
+    };
     if permissions.len() != 1 || permissions.get("contents").and_then(Value::as_str) != Some("read")
     {
         return Err(invalid_data(
             "workflow token permissions must be exactly contents: read",
         ));
     }
-    let jobs = workflow
-        .get("jobs")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("workflow must define a jobs object"))?;
+    let Some(jobs) = workflow.get("jobs").and_then(Value::as_object) else {
+        return Err(invalid_data("workflow must define a jobs object"));
+    };
     for (job_name, job) in jobs {
-        let job = job
-            .as_object()
-            .ok_or_else(|| invalid_data(format!("workflow job {job_name} must be an object")))?;
+        let Some(job) = job.as_object() else {
+            return Err(invalid_data(format!(
+                "workflow job {job_name} must be an object"
+            )));
+        };
         if job.contains_key("permissions") {
             return Err(invalid_data(format!(
                 "workflow job {job_name} may not override token permissions"
@@ -476,13 +488,17 @@ fn validate_workflow_policy(workflow: &Value) -> Result<()> {
         let Some(steps) = job.get("steps") else {
             continue;
         };
-        let steps = steps
-            .as_array()
-            .ok_or_else(|| invalid_data(format!("workflow job {job_name} steps must be a list")))?;
+        let Some(steps) = steps.as_array() else {
+            return Err(invalid_data(format!(
+                "workflow job {job_name} steps must be a list"
+            )));
+        };
         for step in steps {
-            let step = step.as_object().ok_or_else(|| {
-                invalid_data(format!("workflow job {job_name} contains an invalid step"))
-            })?;
+            let Some(step) = step.as_object() else {
+                return Err(invalid_data(format!(
+                    "workflow job {job_name} contains an invalid step"
+                )));
+            };
             if let Some(action) = step.get("uses").and_then(Value::as_str) {
                 validate_action(action)?;
                 if action_repository(action) == Some("actions/checkout") {
@@ -499,18 +515,18 @@ fn validate_workflow_policy(workflow: &Value) -> Result<()> {
             }
         }
     }
-    Ok(())
+    Ok(jobs)
 }
 
 fn validate_checkout_credentials(
     job_name: &str,
     step: &serde_json::Map<String, Value>,
 ) -> Result<()> {
-    let inputs = step.get("with").and_then(Value::as_object).ok_or_else(|| {
-        invalid_data(format!(
+    let Some(inputs) = step.get("with").and_then(Value::as_object) else {
+        return Err(invalid_data(format!(
             "workflow checkout in {job_name} must disable credential persistence"
-        ))
-    })?;
+        )));
+    };
     if !matches!(inputs.get("persist-credentials"), Some(Value::Bool(false))) {
         return Err(invalid_data(format!(
             "workflow checkout in {job_name} must set persist-credentials to boolean false"
@@ -520,11 +536,10 @@ fn validate_checkout_credentials(
 }
 
 fn validate_release_workflow(workflow: &Value) -> Result<()> {
-    validate_workflow_policy(workflow)?;
-    let triggers = workflow
-        .get("on")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("release workflow must define triggers"))?;
+    let jobs = validate_workflow_policy(workflow)?;
+    let Some(triggers) = workflow.get("on").and_then(Value::as_object) else {
+        return Err(invalid_data("release workflow must define triggers"));
+    };
     for trigger in ["push", "pull_request", "workflow_dispatch"] {
         if !triggers.contains_key(trigger) {
             return Err(invalid_data(format!(
@@ -532,10 +547,6 @@ fn validate_release_workflow(workflow: &Value) -> Result<()> {
             )));
         }
     }
-    let jobs = workflow
-        .get("jobs")
-        .and_then(Value::as_object)
-        .ok_or_else(|| invalid_data("release workflow must define jobs"))?;
     for job in ["toolchains", "package", "dependencies"] {
         if !jobs.contains_key(job) {
             return Err(invalid_data(format!(
@@ -830,6 +841,505 @@ fn write_github_output(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejection_guards_preserve_error_kinds_and_context() {
+        let assert_invalid = |error: crate::DynError, expected: &str| {
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::InvalidData
+            );
+            assert_eq!(error.to_string(), expected);
+        };
+        assert_invalid(
+            workflow_file_name(Path::new("")).unwrap_err(),
+            "workflow file name is not valid Unicode",
+        );
+        assert_invalid(
+            rust_version_from_metadata(
+                br#"{"packages":[{"name":"fs2-turbo"},{"name":"fs2-turbo","rust_version":"1.88.0"}]}"#,
+            )
+            .unwrap_err(),
+            "cargo metadata did not provide fs2-turbo rust-version",
+        );
+
+        let registry: SupportRegistry = serde_json::from_value(fixture_registry_value()).unwrap();
+        let mut missing_ci = registry.clone();
+        missing_ci.targets[0].ci = None;
+        assert_invalid(
+            validate_registry(&missing_ci, "1.88.0").unwrap_err(),
+            "CI metadata missing for x86_64-unknown-linux-gnu",
+        );
+        let mut workflow = fixture_workflow(&registry);
+        workflow["on"] = Value::Null;
+        assert_invalid(
+            validate_workflow(&registry, &workflow).unwrap_err(),
+            "workflow must define triggers",
+        );
+
+        for (workflow, expected) in [
+            (
+                serde_json::json!({}),
+                "workflow must declare top-level token permissions",
+            ),
+            (
+                serde_json::json!({"permissions":{"contents":"read"}}),
+                "workflow must define a jobs object",
+            ),
+            (
+                serde_json::json!({"permissions":{"contents":"read"},"jobs":{"guard":null}}),
+                "workflow job guard must be an object",
+            ),
+            (
+                serde_json::json!({"permissions":{"contents":"read"},"jobs":{"guard":{"steps":null}}}),
+                "workflow job guard steps must be a list",
+            ),
+            (
+                serde_json::json!({"permissions":{"contents":"read"},"jobs":{"guard":{"steps":[null]}}}),
+                "workflow job guard contains an invalid step",
+            ),
+        ] {
+            assert_invalid(validate_workflow_policy(&workflow).unwrap_err(), expected);
+        }
+
+        assert_invalid(
+            validate_checkout_credentials("guard", &serde_json::Map::new()).unwrap_err(),
+            "workflow checkout in guard must disable credential persistence",
+        );
+        let release = serde_json::json!({"permissions":{"contents":"read"},"jobs":{}});
+        assert_invalid(
+            validate_release_workflow(&release).unwrap_err(),
+            "release workflow must define triggers",
+        );
+    }
+
+    #[test]
+    fn matrix_entrypoint_preserves_output_when_repository_validation_fails() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github output with spaces");
+        fs::write(&path, "existing=value\n").unwrap();
+        run(crate::repository_root(), Some(&path)).unwrap();
+        let previous = fs::read_to_string(&path).unwrap();
+        let lines = previous.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "existing=value");
+        assert_eq!(lines[2], "rust_version=1.88.0");
+        let generated: Value =
+            serde_json::from_str(lines[1].strip_prefix("matrices=").unwrap()).unwrap();
+        assert_eq!(
+            generated,
+            serde_json::to_value(matrices(&repository_registry())).unwrap()
+        );
+        run(crate::repository_root(), None).unwrap();
+
+        assert!(run(directory.path(), Some(&path)).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), previous);
+        let error = package_rust_version(directory.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("read fs2-turbo package metadata"), "{error}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), previous);
+    }
+
+    #[test]
+    fn workflow_policy_rejects_missing_and_nonobject_jobs() {
+        let mut missing = minimal_policy_workflow();
+        missing.as_object_mut().unwrap().remove("jobs");
+        assert!(
+            validate_workflow_policy(&missing)
+                .unwrap_err()
+                .to_string()
+                .contains("jobs object")
+        );
+        for jobs in [
+            Value::Null,
+            serde_json::json!([]),
+            serde_json::json!({"test": null}),
+        ] {
+            let workflow = serde_json::json!({
+                "permissions": {"contents": "read"},
+                "jobs": jobs
+            });
+            assert!(validate_workflow_policy(&workflow).is_err());
+        }
+    }
+
+    #[test]
+    fn release_workflow_rejects_missing_and_nonobject_triggers() {
+        let workflow = serde_json::json!({
+            "permissions": {"contents": "read"},
+            "jobs": {"toolchains": {}, "package": {}, "dependencies": {}}
+        });
+        assert!(
+            validate_release_workflow(&workflow)
+                .unwrap_err()
+                .to_string()
+                .contains("must define triggers")
+        );
+        for triggers in [
+            Value::Null,
+            serde_json::json!([]),
+            serde_json::json!("push"),
+        ] {
+            let mut invalid = workflow.clone();
+            invalid["on"] = triggers;
+            assert!(
+                validate_release_workflow(&invalid)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("must define triggers")
+            );
+        }
+    }
+
+    #[test]
+    fn shell_policy_handles_comments_and_rejects_unterminated_quotes() {
+        for command in [
+            "",
+            " \n\t",
+            "# comment",
+            "cargo fmt # comment",
+            "echo 'literal # sign'",
+        ] {
+            validate_locked_cargo("fixture", command).unwrap();
+        }
+        for command in ["cargo test --locked '", "echo \"unterminated"] {
+            assert!(
+                validate_locked_cargo("fixture", command)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("unterminated quote")
+            );
+        }
+    }
+
+    #[test]
+    fn metadata_requires_the_library_package_and_explicit_msrv() {
+        for bytes in [
+            br#"{"packages":[]}"#.as_slice(),
+            br#"{"packages":[{"name":"other","rust_version":"1.88.0"}]}"#.as_slice(),
+            br#"{"packages":[{"name":"fs2-turbo","rust_version":null}]}"#.as_slice(),
+        ] {
+            assert!(
+                rust_version_from_metadata(bytes)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("rust-version")
+            );
+        }
+        assert!(rust_version_from_metadata(b"not JSON").is_err());
+        assert_eq!(
+            rust_version_from_metadata(
+                br#"{"packages":[{"name":"fs2-turbo","rust_version":"1.88.0"}]}"#
+            )
+            .unwrap(),
+            "1.88.0"
+        );
+    }
+
+    #[test]
+    fn workflow_directory_rejects_missing_gates_and_nonfiles() {
+        let registry: SupportRegistry = serde_json::from_value(fixture_registry_value()).unwrap();
+        let temporary = tempfile::tempdir().unwrap();
+        let directory = temporary.path().join(".github/workflows");
+        fs::create_dir_all(&directory).unwrap();
+        assert!(
+            validate_workflow_directory(temporary.path(), &registry)
+                .unwrap_err()
+                .to_string()
+                .contains("must contain")
+        );
+        fs::create_dir(directory.join("unexpected.yml")).unwrap();
+        assert!(
+            validate_workflow_directory(temporary.path(), &registry)
+                .unwrap_err()
+                .to_string()
+                .contains("non-file")
+        );
+    }
+
+    #[test]
+    fn workflow_names_must_be_present_and_unicode() {
+        assert_eq!(workflow_file_name(Path::new("ci.yml")).unwrap(), "ci.yml");
+        assert!(workflow_file_name(Path::new("")).is_err());
+        #[cfg(windows)]
+        let invalid = {
+            use std::os::windows::ffi::OsStringExt as _;
+            std::ffi::OsString::from_wide(&[0xd800, u16::from(b'.'), u16::from(b'y')])
+        };
+        #[cfg(unix)]
+        let invalid = {
+            use std::os::unix::ffi::OsStringExt as _;
+            std::ffi::OsString::from_vec(vec![0xff, b'.', b'y'])
+        };
+        assert!(workflow_file_name(Path::new(&invalid)).is_err());
+    }
+
+    #[test]
+    fn shell_boundaries_remain_fail_closed_for_partial_and_escaped_words() {
+        for line in ["", "NAME=value", "env -i NAME=value command -- exec"] {
+            assert!(!command_position_is_dynamic(line), "{line}");
+        }
+        for line in [
+            "$CARGO",
+            "'cargo'",
+            "env -i NAME=value command -- exec $CARGO",
+        ] {
+            assert!(command_position_is_dynamic(line), "{line}");
+        }
+        assert_eq!(shell_word_skeleton("ca\\rgo"), "cargo");
+        assert_eq!(shell_word_skeleton("\\"), "");
+        assert_eq!(shell_word_skeleton("${CARGO}"), "cargo");
+        assert_eq!(shell_word_skeleton("${OTHER}"), "");
+        assert_eq!(shell_word_skeleton("${CARGO"), "cargo");
+        for executable in ["cargo", "cargo.exe", "CARGO.CMD", "C:\\bin\\cargo.cmd"] {
+            assert!(cargo_executable(executable), "{executable}");
+        }
+        assert!(!shell_assignment("=value"));
+        assert!(!shell_assignment("A-B=value"));
+        assert!(has_unquoted_matrix_target(MATRIX_TARGET_EXPRESSION));
+        assert!(!has_unquoted_matrix_target(&format!(
+            "\"{MATRIX_TARGET_EXPRESSION}\""
+        )));
+        assert!(!has_unquoted_matrix_target(&format!(
+            "'{MATRIX_TARGET_EXPRESSION}'"
+        )));
+        for line in ["cargo", "cargo +stable"] {
+            assert!(validate_locked_cargo("fixture", line).is_err());
+        }
+    }
+
+    fn fixture_registry_value() -> Value {
+        serde_json::json!({
+            "version": 6,
+            "coverage_toolchain": "1.98.1",
+            "evidence_levels": ["runtime", "compile", "not-covered"],
+            "targets": [
+                {
+                    "target": "x86_64-unknown-linux-gnu", "platform": "Linux",
+                    "evidence": "runtime", "allocation": "physical-reservation",
+                    "ci": {
+                        "job": "check", "runner": "ubuntu-latest",
+                        "toolchains": ["1.88.0", "stable"], "coverage": true
+                    }
+                },
+                {
+                    "target": "aarch64-unknown-linux-gnu", "platform": "Linux ARM64",
+                    "evidence": "compile", "allocation": "physical-reservation",
+                    "ci": {
+                        "job": "cross_check", "runner": "ubuntu-latest",
+                        "toolchains": ["1.88.0"]
+                    }
+                },
+                {
+                    "target": "i686-apple-darwin", "platform": "Legacy macOS",
+                    "evidence": "not-covered", "allocation": "unknown", "ci": null
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn registry_enforces_each_evidence_and_toolchain_requirement() {
+        let original = fixture_registry_value();
+        let registry = serde_json::from_value(original.clone()).unwrap();
+        validate_registry(&registry, "1.88.0").unwrap();
+        let cases = [
+            ("/version", serde_json::json!(0)),
+            ("/coverage_toolchain", serde_json::json!("stable")),
+            (
+                "/evidence_levels",
+                serde_json::json!(["runtime", "compile"]),
+            ),
+            ("/targets", serde_json::json!([])),
+            ("/targets/0/platform", serde_json::json!("")),
+            ("/targets/0/allocation", serde_json::json!("unknown")),
+            ("/targets/0/ci", serde_json::Value::Null),
+            ("/targets/0/ci/job", serde_json::json!("invalid-job")),
+            ("/targets/0/ci/toolchains", serde_json::json!([])),
+            ("/targets/0/ci/toolchains", serde_json::json!(["stable"])),
+            ("/targets/0/ci/runner", serde_json::json!("windows-latest")),
+            ("/targets/1/ci/toolchains", serde_json::json!(["stable"])),
+            (
+                "/targets/2/allocation",
+                serde_json::json!("physical-reservation"),
+            ),
+            ("/targets/2/ci", original["targets"][0]["ci"].clone()),
+        ];
+        for (pointer, replacement) in cases {
+            let mut altered = original.clone();
+            *altered.pointer_mut(pointer).unwrap() = replacement;
+            let registry = serde_json::from_value(altered).unwrap();
+            assert!(validate_registry(&registry, "1.88.0").is_err(), "{pointer}");
+        }
+        let mut registry: SupportRegistry = serde_json::from_value(original).unwrap();
+        registry.targets[1].ci.as_mut().unwrap().toolchains = vec!["nightly".to_owned()];
+        validate_registry(&registry, "1.88.0").unwrap();
+        registry.targets[1].ci.as_mut().unwrap().coverage = true;
+        assert!(validate_registry(&registry, "1.88.0").is_err());
+        registry.targets[1].ci.as_mut().unwrap().coverage = false;
+        registry.targets[0].ci.as_mut().unwrap().coverage = false;
+        let error = validate_registry(&registry, "1.88.0")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("at least one native coverage target"));
+        registry.targets.remove(0);
+        let error = validate_registry(&registry, "1.88.0")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("at least one runtime target"));
+    }
+
+    fn fixture_workflow(registry: &SupportRegistry) -> Value {
+        let mut workflow = minimal_policy_workflow();
+        workflow["on"] = serde_json::json!({
+            "workflow_dispatch": {},
+            "schedule": [{"cron": "17 1 1 * *"}]
+        });
+        for (name, matrix) in matrices(registry) {
+            workflow["jobs"].as_object_mut().unwrap().insert(
+                name,
+                serde_json::json!({"strategy": {"matrix": matrix}, "steps": []}),
+            );
+        }
+        workflow
+    }
+
+    #[test]
+    fn workflow_requires_literal_matrices_complete_jobs_and_canary_triggers() {
+        let registry = serde_json::from_value(fixture_registry_value()).unwrap();
+        let original = fixture_workflow(&registry);
+        validate_workflow(&registry, &original).unwrap();
+        for (pointer, replacement) in [
+            ("/jobs", serde_json::json!({})),
+            ("/jobs/check", serde_json::Value::Null),
+            ("/jobs/check/strategy", serde_json::Value::Null),
+            (
+                "/jobs/check/strategy/matrix",
+                serde_json::json!("${{ fromJSON(needs.matrix.outputs.value) }}"),
+            ),
+            (
+                "/jobs/check/strategy/matrix",
+                serde_json::json!({"include": []}),
+            ),
+            ("/on", serde_json::Value::Null),
+            (
+                "/on",
+                serde_json::json!({"schedule": [{"cron": "17 1 1 * *"}]}),
+            ),
+            ("/on/schedule", serde_json::json!([])),
+        ] {
+            let mut workflow = original.clone();
+            *workflow.pointer_mut(pointer).unwrap() = replacement;
+            assert!(
+                validate_workflow(&registry, &workflow).is_err(),
+                "{pointer}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_policy_rejects_malformed_and_untrusted_steps() {
+        let original = minimal_policy_workflow();
+        for (pointer, replacement) in [
+            ("/jobs/test/steps", serde_json::json!(0)),
+            ("/jobs/test/steps", serde_json::json!([null])),
+            ("/jobs/test/steps/0/with", serde_json::Value::Null),
+            (
+                "/jobs/test/steps/0",
+                serde_json::json!({"run": "cargo check --locked --target ${{ matrix.target }}"}),
+            ),
+            (
+                "/jobs/test",
+                serde_json::json!({"uses": "untrusted/reusable@main"}),
+            ),
+        ] {
+            let mut workflow = original.clone();
+            *workflow.pointer_mut(pointer).unwrap() = replacement;
+            assert!(validate_workflow_policy(&workflow).is_err(), "{pointer}");
+        }
+        let workflow = serde_json::json!({
+            "permissions": {"contents": "read"},
+            "jobs": {"empty": {}}
+        });
+        validate_workflow_policy(&workflow).unwrap();
+    }
+
+    #[test]
+    fn release_workflow_requires_every_trigger_and_gate_job() {
+        let original = serde_json::json!({
+            "permissions": {"contents": "read"},
+            "on": {"push": {}, "pull_request": {}, "workflow_dispatch": {}},
+            "jobs": {"toolchains": {}, "package": {}, "dependencies": {}}
+        });
+        validate_release_workflow(&original).unwrap();
+        for trigger in ["push", "pull_request", "workflow_dispatch"] {
+            let mut workflow = original.clone();
+            workflow["on"].as_object_mut().unwrap().remove(trigger);
+            let error = validate_release_workflow(&workflow)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(trigger));
+        }
+        for job in ["toolchains", "package", "dependencies"] {
+            let mut workflow = original.clone();
+            workflow["jobs"].as_object_mut().unwrap().remove(job);
+            let error = validate_release_workflow(&workflow)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(job));
+        }
+    }
+
+    #[test]
+    fn xtask_alias_must_remain_locked() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(validate_xtask_alias(directory.path()).is_err());
+        let cargo = directory.path().join(".cargo");
+        fs::create_dir(&cargo).unwrap();
+        let path = cargo.join("config.toml");
+        fs::write(
+            &path,
+            "[alias]\n  xtask = \"run --locked --package fs2-dev --\"\n",
+        )
+        .unwrap();
+        validate_xtask_alias(directory.path()).unwrap();
+        fs::write(&path, "[alias]\nxtask = \"run --package fs2-dev --\"\n").unwrap();
+        assert!(validate_xtask_alias(directory.path()).is_err());
+    }
+
+    #[test]
+    fn github_output_appends_parseable_matrices_and_preserves_prior_values() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("github-output");
+        let registry = serde_json::from_value(fixture_registry_value()).unwrap();
+        let generated = matrices(&registry);
+        fs::write(&path, "existing=value\n").unwrap();
+        write_github_output(&path, &generated, "1.88.0").unwrap();
+        let contents = fs::read_to_string(&path).unwrap();
+        let lines = contents.lines().collect::<Vec<_>>();
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0], "existing=value");
+        assert_eq!(lines[2], "rust_version=1.88.0");
+        let actual: Value =
+            serde_json::from_str(lines[1].strip_prefix("matrices=").unwrap()).unwrap();
+        assert_eq!(actual, serde_json::to_value(&generated).unwrap());
+        assert!(write_github_output(directory.path(), &generated, "1.88.0").is_err());
+    }
+
+    #[test]
+    fn runner_names_and_target_mapping_are_explicit() {
+        for (runner, normal, coverage) in [
+            (Runner::MacOsIntel, "macos-15-intel", "macos-15-intel"),
+            (Runner::MacOs, "macos-latest", "macos-26"),
+            (Runner::Ubuntu, "ubuntu-latest", "ubuntu-24.04"),
+            (Runner::Windows, "windows-latest", "windows-2025-vs2026"),
+        ] {
+            assert_eq!(runner.as_str(), normal);
+            assert_eq!(runner.coverage_as_str(), coverage);
+        }
+        assert_eq!(expected_runtime_runner("unknown-target-os"), None);
+    }
 
     fn repository_registry() -> SupportRegistry {
         load_registry(&crate::repository_root().join("support-matrix.json")).unwrap()
