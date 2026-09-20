@@ -307,6 +307,47 @@ struct DefinitionDiagnosticsRecord {
     symbols: Vec<String>,
 }
 
+struct CoverageInputs {
+    combined: CoverageExport,
+    unit: CoverageExport,
+    integration: CoverageExport,
+    physical_lines: PhysicalLines,
+}
+
+fn read_coverage_export(path: &Path) -> Result<CoverageExport> {
+    fs::read_to_string(path)
+        .map_err(Into::into)
+        .and_then(|contents| parse_json(&contents))
+}
+
+fn read_physical_lines(path: &Path) -> Result<PhysicalLines> {
+    fs::read_to_string(path)
+        .map_err(Into::into)
+        .and_then(|contents| parse_lcov(&contents))
+}
+
+fn load_coverage_inputs(
+    json_path: &Path,
+    unit_json_path: &Path,
+    integration_json_path: &Path,
+    lcov_path: &Path,
+) -> Result<CoverageInputs> {
+    read_coverage_export(json_path)
+        .and_then(|combined| read_coverage_export(unit_json_path).map(|unit| (combined, unit)))
+        .and_then(|(combined, unit)| {
+            read_coverage_export(integration_json_path)
+                .map(|integration| (combined, unit, integration))
+        })
+        .and_then(|(combined, unit, integration)| {
+            read_physical_lines(lcov_path).map(|physical_lines| CoverageInputs {
+                combined,
+                unit,
+                integration,
+                physical_lines,
+            })
+        })
+}
+
 pub(crate) fn run(
     target: &str,
     json_path: &Path,
@@ -315,72 +356,87 @@ pub(crate) fn run(
     integration_json_path: &Path,
     diagnostics_json_path: &Path,
 ) -> Result<()> {
-    let policy = policy_for_target(target)?;
-    let export = parse_json(&fs::read_to_string(json_path)?)?;
-    let unit_export = parse_json(&fs::read_to_string(unit_json_path)?)?;
-    let integration_export = parse_json(&fs::read_to_string(integration_json_path)?)?;
-    let physical_lines = parse_lcov(&fs::read_to_string(lcov_path)?)?;
-    let data = single_data(&export, "combined")?;
-    let unit_data = single_data(&unit_export, "unit")?;
-    let integration_data = single_data(&integration_export, "integration")?;
+    policy_for_target(target).and_then(|policy| {
+        load_coverage_inputs(
+            json_path,
+            unit_json_path,
+            integration_json_path,
+            lcov_path,
+        )
+        .and_then(|inputs| {
+            let data = single_data(&inputs.combined, "combined")?;
+            let unit_data = single_data(&inputs.unit, "unit")?;
+            let integration_data = single_data(&inputs.integration, "integration")?;
 
-    validate(target, policy, &data.totals, physical_lines)?;
-    let (combined_diagnostics, combined_groups) = instantiation_diagnostics(data)?;
-    let (unit_diagnostics, unit_groups) = instantiation_diagnostics(unit_data)?;
-    let (integration_diagnostics, integration_groups) =
-        instantiation_diagnostics(integration_data)?;
-    validate_source_definition_completeness(target, "combined", &combined_diagnostics)?;
-    validate_source_definition_completeness(target, "unit", &unit_diagnostics)?;
-    let intended_integration_definitions =
-        validate_integration_instantiations(target, &unit_groups, &integration_groups)?;
-    write_diagnostics_report(
-        diagnostics_json_path,
-        target,
-        intended_integration_definitions,
-        [
-            (
-                "combined",
-                data,
-                &combined_groups,
-                &combined_diagnostics,
-                None,
-            ),
-            ("unit", unit_data, &unit_groups, &unit_diagnostics, None),
-            (
-                "integration",
-                integration_data,
-                &integration_groups,
-                &integration_diagnostics,
-                Some(&unit_groups),
-            ),
-        ],
-    )?;
-    println!(
-        "coverage policy satisfied for {target}: unique lines {}/{}, LLVM lines {}/{}, regions {}/{}, functions {}/{}, instantiations {}/{} (diagnostic)",
-        physical_lines.covered,
-        physical_lines.count,
-        data.totals.lines.covered,
-        data.totals.lines.count,
-        data.totals.regions.covered,
-        data.totals.regions.count,
-        data.totals.functions.covered,
-        data.totals.functions.count,
-        data.totals.instantiations.covered,
-        data.totals.instantiations.count,
-    );
-    print_instantiation_diagnostics(target, "combined", data, &combined_diagnostics);
-    print_instantiation_diagnostics(target, "unit", unit_data, &unit_diagnostics);
-    print_instantiation_diagnostics(
-        target,
-        "integration",
-        integration_data,
-        &integration_diagnostics,
-    );
-    println!(
-        "intended integration definitions for {target}: {}/{}",
-        intended_integration_definitions.covered, intended_integration_definitions.count
-    );
-    Ok(())
+            validate(target, policy, &data.totals, inputs.physical_lines).and_then(|()| {
+                let (combined_diagnostics, combined_groups) =
+                    instantiation_diagnostics(data)?;
+                let (unit_diagnostics, unit_groups) = instantiation_diagnostics(unit_data)?;
+                let (integration_diagnostics, integration_groups) =
+                    instantiation_diagnostics(integration_data)?;
+                validate_source_definition_completeness(
+                    target,
+                    "combined",
+                    &combined_diagnostics,
+                )?;
+                validate_source_definition_completeness(target, "unit", &unit_diagnostics)?;
+                let intended_integration_definitions = validate_integration_instantiations(
+                    target,
+                    &unit_groups,
+                    &integration_groups,
+                )?;
+                write_diagnostics_report(
+                    diagnostics_json_path,
+                    target,
+                    intended_integration_definitions,
+                    [
+                        (
+                            "combined",
+                            data,
+                            &combined_groups,
+                            &combined_diagnostics,
+                            None,
+                        ),
+                        ("unit", unit_data, &unit_groups, &unit_diagnostics, None),
+                        (
+                            "integration",
+                            integration_data,
+                            &integration_groups,
+                            &integration_diagnostics,
+                            Some(&unit_groups),
+                        ),
+                    ],
+                )?;
+                println!(
+                    "coverage policy satisfied for {target}: unique lines {}/{}, LLVM lines {}/{}, regions {}/{}, functions {}/{}, instantiations {}/{} (diagnostic)",
+                    inputs.physical_lines.covered,
+                    inputs.physical_lines.count,
+                    data.totals.lines.covered,
+                    data.totals.lines.count,
+                    data.totals.regions.covered,
+                    data.totals.regions.count,
+                    data.totals.functions.covered,
+                    data.totals.functions.count,
+                    data.totals.instantiations.covered,
+                    data.totals.instantiations.count,
+                );
+                print_instantiation_diagnostics(target, "combined", data, &combined_diagnostics);
+                print_instantiation_diagnostics(target, "unit", unit_data, &unit_diagnostics);
+                print_instantiation_diagnostics(
+                    target,
+                    "integration",
+                    integration_data,
+                    &integration_diagnostics,
+                );
+                println!(
+                    "intended integration definitions for {target}: {}/{}",
+                    intended_integration_definitions.covered,
+                    intended_integration_definitions.count
+                );
+                Ok(())
+            })
+        })
+    })
 }
 
 fn single_data<'a>(export: &'a CoverageExport, profile: &str) -> Result<&'a CoverageData> {
@@ -770,7 +826,8 @@ fn write_diagnostics_report<const N: usize>(
         intended_integration_definitions,
         profiles,
     };
-    let mut encoded = serde_json::to_vec_pretty(&report)?;
+    let mut encoded = serde_json::to_vec_pretty(&report)
+        .expect("coverage diagnostics contain only JSON-serializable values");
     encoded.push(b'\n');
     fs::write(path, encoded)?;
     for profile in &report.profiles {

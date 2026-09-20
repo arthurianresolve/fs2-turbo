@@ -21,8 +21,9 @@ impl ProcessContainment {
     }
 
     pub(super) fn attach(&mut self, child: &Child) -> io::Result<()> {
-        self.process_group = Some(super::checked_process_id(child.id())?);
-        Ok(())
+        super::checked_process_id(child.id()).map(|process_group| {
+            self.process_group = Some(process_group);
+        })
     }
 
     pub(super) fn terminate(&self, child: &mut Child) -> io::Result<()> {
@@ -98,30 +99,31 @@ impl ProcessContainment {
         // SAFETY: null security attributes and name request an unnamed job with
         // default security. The returned handle is owned by this value.
         let job = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
-        let job = std::ptr::NonNull::new(job)
-            .ok_or_else(io::Error::last_os_error)?
-            .as_ptr();
-        let containment = Self { job };
-        // SAFETY: the structure is plain Windows API data and is fully sized for
-        // JobObjectExtendedLimitInformation.
-        let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
-        information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        let information_size = const {
-            assert!(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() <= u32::MAX as usize);
-            size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32
-        };
-        // SAFETY: `job` is valid and `information` points to the declared
-        // structure for the duration of the call.
-        let configured = unsafe {
-            SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                (&raw const information).cast(),
-                information_size,
-            )
-        };
-        check_win32_result(configured)?;
-        Ok(containment)
+        std::ptr::NonNull::new(job)
+            .ok_or_else(io::Error::last_os_error)
+            .map(std::ptr::NonNull::as_ptr)
+            .and_then(|job| {
+                let containment = Self { job };
+                // SAFETY: the structure is plain Windows API data and is fully sized for
+                // JobObjectExtendedLimitInformation.
+                let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { zeroed() };
+                information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                let information_size = const {
+                    assert!(size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() <= u32::MAX as usize);
+                    size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32
+                };
+                // SAFETY: `job` is valid and `information` points to the declared
+                // structure for the duration of the call.
+                let configured = unsafe {
+                    SetInformationJobObject(
+                        job,
+                        JobObjectExtendedLimitInformation,
+                        (&raw const information).cast(),
+                        information_size,
+                    )
+                };
+                check_win32_result(configured).map(|()| containment)
+            })
     }
 
     pub(super) fn attach(&mut self, child: &Child) -> io::Result<()> {
@@ -132,8 +134,8 @@ impl ProcessContainment {
         // remains owned by this value until process execution completes.
         check_win32_result(unsafe {
             AssignProcessToJobObject(self.job, child.as_raw_handle().cast())
-        })?;
-        resume_process(child.id())
+        })
+        .and_then(|()| resume_process(child.id()))
     }
 
     pub(super) fn wait_for_exit(&self, timeout: std::time::Duration) -> io::Result<()> {
@@ -191,8 +193,7 @@ fn resume_process(process_id: u32) -> io::Result<()> {
 
     // SAFETY: the snapshot handle is checked before use and closed below.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) };
-    check_win32_result(i32::from(snapshot != INVALID_HANDLE_VALUE))?;
-    let result = (|| {
+    let result = check_win32_result(i32::from(snapshot != INVALID_HANDLE_VALUE)).and_then(|()| {
         // SAFETY: THREADENTRY32 is plain Windows API data; dwSize is set before use.
         let mut entry: THREADENTRY32 = unsafe { zeroed() };
         entry.dwSize = const {
@@ -200,28 +201,31 @@ fn resume_process(process_id: u32) -> io::Result<()> {
             size_of::<THREADENTRY32>() as u32
         };
         // SAFETY: snapshot and entry are valid for enumeration.
-        check_win32_result(unsafe { Thread32First(snapshot, &mut entry) })?;
-        loop {
-            if entry.th32OwnerProcessID == process_id {
-                // SAFETY: the thread ID came from the live snapshot entry.
-                let thread = unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
-                check_win32_result(i32::from(!thread.is_null()))?;
-                // SAFETY: thread is an owned handle opened with suspend/resume access.
-                let resumed = unsafe { ResumeThread(thread) };
-                let result = check_win32_result(i32::from(resumed != u32::MAX));
-                // SAFETY: thread is owned and closed exactly once. Preserve the prior error.
-                unsafe { CloseHandle(thread) };
-                return result;
+        check_win32_result(unsafe { Thread32First(snapshot, &mut entry) }).and_then(|()| {
+            loop {
+                if entry.th32OwnerProcessID == process_id {
+                    // SAFETY: the thread ID came from the live snapshot entry.
+                    let thread =
+                        unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) };
+                    return check_win32_result(i32::from(!thread.is_null())).and_then(|()| {
+                        // SAFETY: thread is an owned handle opened with suspend/resume access.
+                        let resumed = unsafe { ResumeThread(thread) };
+                        let result = check_win32_result(i32::from(resumed != u32::MAX));
+                        // SAFETY: thread is owned and closed exactly once. Preserve the prior error.
+                        unsafe { CloseHandle(thread) };
+                        result
+                    });
+                }
+                // SAFETY: snapshot and entry remain valid for enumeration.
+                if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::NotFound,
+                        "suspended child thread was not found",
+                    ));
+                }
             }
-            // SAFETY: snapshot and entry remain valid for enumeration.
-            if unsafe { Thread32Next(snapshot, &mut entry) } == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::NotFound,
-                    "suspended child thread was not found",
-                ));
-            }
-        }
-    })();
+        })
+    });
     // SAFETY: snapshot is owned and closed exactly once.
     unsafe { CloseHandle(snapshot) };
     result

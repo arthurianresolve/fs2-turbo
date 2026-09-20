@@ -164,29 +164,36 @@ impl Drop for TestDrive {
 #[cfg(test)]
 pub(crate) fn test_drive(private_root: &Path) -> Result<TestDrive> {
     let directory_path = private_root.join(TEST_DRIVE_DIRECTORY);
-    let directory = create_or_open_private_directory(&directory_path)?;
-    let canonical = directory_path.canonicalize()?;
-    require_canonical_local_fixed_volume(&canonical, "test drive root")?;
-    let target = dos_device_target(&canonical)?;
-    // A directory-backed drive exercises physical ancestry validation.
-    let drives = unsafe { GetLogicalDrives() };
-    check_win32(i32::from(drives != 0))?;
-
-    let (path, device) = checked_native!(
-        TestDriveSelection,
-        select_test_drive(
-            drives,
-            &target,
-            define_test_device,
-            dos_device_matches,
-            remove_test_device
-        )
-    )?;
-    Ok(TestDrive {
-        path,
-        device,
-        target,
-        _directory: directory,
+    create_or_open_private_directory(&directory_path).and_then(|directory| {
+        directory_path
+            .canonicalize()
+            .map_err(Into::into)
+            .and_then(|canonical| {
+                require_canonical_local_fixed_volume(&canonical, "test drive root").and_then(|()| {
+                    dos_device_target(&canonical).and_then(|target| {
+                        // A directory-backed drive exercises physical ancestry validation.
+                        let drives = unsafe { GetLogicalDrives() };
+                        check_win32(i32::from(drives != 0)).and_then(|()| {
+                            checked_native!(
+                                TestDriveSelection,
+                                select_test_drive(
+                                    drives,
+                                    &target,
+                                    define_test_device,
+                                    dos_device_matches,
+                                    remove_test_device
+                                )
+                            )
+                            .map(|(path, device)| TestDrive {
+                                path,
+                                device,
+                                target,
+                                _directory: directory,
+                            })
+                        })
+                    })
+                })
+            })
     })
 }
 
@@ -318,40 +325,41 @@ fn require_local_fixed_volume_with(
     label: &str,
     allow_canonical_verbatim_disk: bool,
 ) -> Result<()> {
-    reject_ambiguous_path_with(path, allow_canonical_verbatim_disk)?;
-    if !path.is_absolute() {
-        return Err(invalid_data(format!(
-            "{label} must be absolute: {}",
-            path.display()
-        )));
-    }
-    if !is_local_fixed_drive_with_options(path, allow_canonical_verbatim_disk, |root| {
-        // SAFETY: root points to a NUL-terminated drive-root string.
-        unsafe { GetDriveTypeW(root) }
-    }) {
-        return Err(invalid_data(format!(
-            "{label} must reside on a local fixed Windows volume; UNC, mapped remote, removable, optical, RAM-disk, unknown, and unavailable roots are not accepted: {}",
-            path.display()
-        )));
-    }
-    Ok(())
+    reject_ambiguous_path_with(path, allow_canonical_verbatim_disk).and_then(|()| {
+        if !path.is_absolute() {
+            return Err(invalid_data(format!(
+                "{label} must be absolute: {}",
+                path.display()
+            )));
+        }
+        if !is_local_fixed_drive_with_options(path, allow_canonical_verbatim_disk, &|root| {
+            // SAFETY: root points to a NUL-terminated drive-root string.
+            unsafe { GetDriveTypeW(root) }
+        }) {
+            return Err(invalid_data(format!(
+                "{label} must reside on a local fixed Windows volume; UNC, mapped remote, removable, optical, RAM-disk, unknown, and unavailable roots are not accepted: {}",
+                path.display()
+            )));
+        }
+        Ok(())
+    })
 }
 
 pub(crate) fn is_local_fixed_drive(path: &Path) -> bool {
-    is_local_fixed_drive_with(path, |root| {
+    is_local_fixed_drive_with(path, &|root| {
         // SAFETY: root points to a NUL-terminated drive-root string.
         unsafe { GetDriveTypeW(root) }
     })
 }
 
-fn is_local_fixed_drive_with(path: &Path, drive_type: impl FnOnce(*const u16) -> u32) -> bool {
+fn is_local_fixed_drive_with(path: &Path, drive_type: &dyn Fn(*const u16) -> u32) -> bool {
     is_local_fixed_drive_with_options(path, false, drive_type)
 }
 
 fn is_local_fixed_drive_with_options(
     path: &Path,
     allow_canonical_verbatim_disk: bool,
-    drive_type: impl FnOnce(*const u16) -> u32,
+    drive_type: &dyn Fn(*const u16) -> u32,
 ) -> bool {
     use std::path::{Component, Prefix};
 
@@ -382,79 +390,81 @@ fn guard_trusted_directory_ancestry(
 ) -> Result<Vec<fs::File>> {
     use std::path::Component;
 
-    reject_ambiguous_path_with(path, allow_canonical_verbatim_disk)?;
-    if !path.is_absolute() {
-        return Err(invalid_data(format!(
-            "capture directory path must be absolute: {}",
-            path.display()
-        )));
-    }
-    let mut current = std::path::PathBuf::new();
-    let mut held = Vec::new();
-    for component in path.components() {
-        match component {
-            Component::Prefix(_) => {
-                current.push(component.as_os_str());
-                continue;
-            }
-            Component::RootDir | Component::Normal(_) => current.push(component.as_os_str()),
-            Component::CurDir => continue,
-            Component::ParentDir => {
-                return Err(invalid_data(format!(
-                    "capture directory path may not contain '..': {}",
-                    path.display()
-                )));
-            }
+    reject_ambiguous_path_with(path, allow_canonical_verbatim_disk).and_then(|()| {
+        if !path.is_absolute() {
+            return Err(invalid_data(format!(
+                "capture directory path must be absolute: {}",
+                path.display()
+            )));
         }
-        let directory = match open_ancestry_directory(&current) {
-            Ok(directory) => directory,
-            Err(error) => {
-                return Err(invalid_data(format!(
-                    "unable to retain capture directory ancestry {}: {error}",
-                    current.display()
-                )));
+        let mut current = std::path::PathBuf::new();
+        let mut held = Vec::new();
+        for component in path.components() {
+            match component {
+                Component::Prefix(_) => {
+                    current.push(component.as_os_str());
+                    continue;
+                }
+                Component::RootDir | Component::Normal(_) => current.push(component.as_os_str()),
+                Component::CurDir => continue,
+                Component::ParentDir => {
+                    return Err(invalid_data(format!(
+                        "capture directory path may not contain '..': {}",
+                        path.display()
+                    )));
+                }
             }
-        };
-        retain_physical_root_ancestry(&current, &directory, &mut held)?;
-        held.push(directory);
-    }
-    // An absolute path includes a root, so successful traversal retains a handle.
-    Ok(held)
+            let directory = match open_ancestry_directory(&current) {
+                Ok(directory) => directory,
+                Err(error) => {
+                    return Err(invalid_data(format!(
+                        "unable to retain capture directory ancestry {}: {error}",
+                        current.display()
+                    )));
+                }
+            };
+            retain_physical_root_ancestry(&current, &directory, &mut held)?;
+            held.push(directory);
+        }
+        // An absolute path includes a root, so successful traversal retains a handle.
+        Ok(held)
+    })
 }
 
 #[cfg(test)]
 pub(crate) fn create_or_open_trusted_directory_ancestry(path: &Path) -> Result<Vec<fs::File>> {
-    reject_ambiguous_path(path)?;
-    if !path.is_absolute() {
-        return Err(invalid_data(format!(
-            "capture directory path must be absolute: {}",
-            path.display()
-        )));
-    }
-    let mut current = std::path::PathBuf::new();
-    let mut held = Vec::new();
-    for component in path.components() {
-        if !advance_directory_ancestry(&mut current, component, path)? {
-            continue;
+    reject_ambiguous_path(path).and_then(|()| {
+        if !path.is_absolute() {
+            return Err(invalid_data(format!(
+                "capture directory path must be absolute: {}",
+                path.display()
+            )));
         }
-        let directory = match fs::symlink_metadata(&current) {
-            Ok(_) => open_ancestry_directory(&current),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                create_or_open_private_directory(&current)
+        let mut current = std::path::PathBuf::new();
+        let mut held = Vec::new();
+        for component in path.components() {
+            if !advance_directory_ancestry(&mut current, component, path)? {
+                continue;
             }
-            Err(error) => Err(error.into()),
+            let directory = match fs::symlink_metadata(&current) {
+                Ok(_) => open_ancestry_directory(&current),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                    create_or_open_private_directory(&current)
+                }
+                Err(error) => Err(error.into()),
+            }
+            .map_err(|error| {
+                invalid_data(format!(
+                    "unable to retain or create capture directory ancestry {}: {error}",
+                    current.display()
+                ))
+            })?;
+            retain_physical_root_ancestry(&current, &directory, &mut held)?;
+            held.push(directory);
         }
-        .map_err(|error| {
-            invalid_data(format!(
-                "unable to retain or create capture directory ancestry {}: {error}",
-                current.display()
-            ))
-        })?;
-        retain_physical_root_ancestry(&current, &directory, &mut held)?;
-        held.push(directory);
-    }
-    // An absolute path includes a root, so successful traversal retains a handle.
-    Ok(held)
+        // An absolute path includes a root, so successful traversal retains a handle.
+        Ok(held)
+    })
 }
 
 #[cfg(test)]
@@ -490,14 +500,16 @@ fn retain_physical_root_ancestry(
     if path.parent().is_some() {
         return Ok(());
     }
-    let physical = final_directory_path(directory)?;
-    if physical.parent().is_some() {
-        // A DOS drive can name an ordinary directory. Retain its real parents
-        // too, and bind that ancestry to the already-open alias target.
-        let ancestry = guard_trusted_directory_ancestry(&physical, true)?;
-        retain_matching_ancestry(directory, ancestry, held)?;
-    }
-    Ok(())
+    final_directory_path(directory).and_then(|physical| {
+        if physical.parent().is_some() {
+            // A DOS drive can name an ordinary directory. Retain its real parents
+            // too, and bind that ancestry to the already-open alias target.
+            guard_trusted_directory_ancestry(&physical, true)
+                .and_then(|ancestry| retain_matching_ancestry(directory, ancestry, held))
+        } else {
+            Ok(())
+        }
+    })
 }
 
 fn retain_matching_ancestry(
@@ -508,11 +520,16 @@ fn retain_matching_ancestry(
     let Some(target) = ancestry.last() else {
         return Err(invalid_data("physical drive ancestry is empty"));
     };
-    if directory_identity(directory)? != directory_identity(target)? {
-        return Err(invalid_data("drive alias target changed during admission"));
-    }
-    held.extend(ancestry);
-    Ok(())
+    let target_identity = directory_identity(target);
+    directory_identity(directory).and_then(|directory_key| {
+        target_identity.and_then(|target_identity| {
+            if directory_key != target_identity {
+                return Err(invalid_data("drive alias target changed during admission"));
+            }
+            held.extend(ancestry);
+            Ok(())
+        })
+    })
 }
 
 fn final_directory_path(directory: &fs::File) -> Result<PathBuf> {
@@ -543,8 +560,7 @@ fn final_directory_path_result(buffer: &[u16], length: u32, error: io::Error) ->
         ));
     }
     let path = PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length as usize]));
-    require_canonical_local_fixed_volume(&path, "physical directory ancestry")?;
-    Ok(path)
+    require_canonical_local_fixed_volume(&path, "physical directory ancestry").map(|()| path)
 }
 
 fn directory_identity(directory: &fs::File) -> Result<(u64, [u8; 16])> {
@@ -577,14 +593,16 @@ fn reject_ambiguous_path_with(path: &Path, allow_canonical_verbatim_disk: bool) 
     use std::path::{Component, Prefix};
 
     for component in path.components() {
-        if let Component::Prefix(prefix) = component
-            && !matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _))
-            && !(allow_canonical_verbatim_disk && matches!(prefix.kind(), Prefix::VerbatimDisk(_)))
-        {
-            return Err(invalid_data(format!(
-                "capture path uses an unsupported Windows namespace prefix: {}",
-                path.display()
-            )));
+        if let Component::Prefix(prefix) = component {
+            let supported = matches!(prefix.kind(), Prefix::Disk(_) | Prefix::UNC(_, _))
+                | (allow_canonical_verbatim_disk
+                    & matches!(prefix.kind(), Prefix::VerbatimDisk(_)));
+            if !supported {
+                return Err(invalid_data(format!(
+                    "capture path uses an unsupported Windows namespace prefix: {}",
+                    path.display()
+                )));
+            }
         }
         let Component::Normal(component) = component else {
             continue;
@@ -619,41 +637,44 @@ fn reserved_device_name(name: &str) -> bool {
 }
 
 pub(crate) fn create_or_open_private_directory(path: &Path) -> Result<fs::File> {
-    let mut security = PrivateSecurity::new()?;
-    let attributes = security.attributes();
-    let encoded = encode_path(path);
-    let created = unsafe {
-        // SAFETY: the path and security descriptor remain valid for the call.
-        CreateDirectoryW(encoded.as_ptr(), &attributes)
-    };
-    directory_creation_result(created, io::Error::last_os_error())?;
-
-    let directory = open_directory(path, READ_CONTROL)?;
-    verify_private_directory(&directory, path, &security)?;
-    Ok(directory)
+    PrivateSecurity::new().and_then(|mut security| {
+        let attributes = security.attributes();
+        let encoded = encode_path(path);
+        let created = unsafe {
+            // SAFETY: the path and security descriptor remain valid for the call.
+            CreateDirectoryW(encoded.as_ptr(), &attributes)
+        };
+        directory_creation_result(created, io::Error::last_os_error()).and_then(|()| {
+            open_directory(path, READ_CONTROL).and_then(|directory| {
+                verify_private_directory(&directory, path, &security).map(|()| directory)
+            })
+        })
+    })
 }
 
 pub(crate) fn harden_new_private_directory(path: &Path) -> Result<fs::File> {
-    let security = PrivateSecurity::new()?;
-    let directory = open_directory(path, READ_CONTROL | WRITE_DAC | WRITE_OWNER)?;
-    let result = unsafe {
-        // SAFETY: the directory handle is valid, and the owner SID and ACL are
-        // owned by `security` for the duration of the call.
-        SetSecurityInfo(
-            directory.as_raw_handle(),
-            SE_FILE_OBJECT,
-            OWNER_SECURITY_INFORMATION
-                | DACL_SECURITY_INFORMATION
-                | PROTECTED_DACL_SECURITY_INFORMATION,
-            security.owner.as_ptr().cast_mut().cast(),
-            std::ptr::null_mut(),
-            security.acl.as_ptr().cast(),
-            std::ptr::null(),
-        )
-    };
-    check_win32_status(result)?;
-    verify_private_directory(&directory, path, &security)?;
-    Ok(directory)
+    PrivateSecurity::new().and_then(|security| {
+        open_directory(path, READ_CONTROL | WRITE_DAC | WRITE_OWNER).and_then(|directory| {
+            let result = unsafe {
+                // SAFETY: the directory handle is valid, and the owner SID and ACL are
+                // owned by `security` for the duration of the call.
+                SetSecurityInfo(
+                    directory.as_raw_handle(),
+                    SE_FILE_OBJECT,
+                    OWNER_SECURITY_INFORMATION
+                        | DACL_SECURITY_INFORMATION
+                        | PROTECTED_DACL_SECURITY_INFORMATION,
+                    security.owner.as_ptr().cast_mut().cast(),
+                    std::ptr::null_mut(),
+                    security.acl.as_ptr().cast(),
+                    std::ptr::null(),
+                )
+            };
+            check_win32_status(result).and_then(|()| {
+                verify_private_directory(&directory, path, &security).map(|()| directory)
+            })
+        })
+    })
 }
 
 pub(super) fn open_trusted_ancestor(path: &Path) -> Result<fs::File> {
@@ -661,10 +682,11 @@ pub(super) fn open_trusted_ancestor(path: &Path) -> Result<fs::File> {
 }
 
 fn open_ancestor(path: &Path, role: AncestorRole) -> Result<fs::File> {
-    let security = PrivateSecurity::new()?;
-    let directory = open_directory(path, READ_CONTROL)?;
-    verify_trusted_ancestor(&directory, path, &security, role)?;
-    Ok(directory)
+    PrivateSecurity::new().and_then(|security| {
+        open_directory(path, READ_CONTROL).and_then(|directory| {
+            verify_trusted_ancestor(&directory, path, &security, role).map(|()| directory)
+        })
+    })
 }
 
 struct PrivateSecurity {
@@ -690,63 +712,67 @@ impl PrivateSecurity {
             Some(system_sid)
         };
 
-        let acl_size = private_acl_size(owner.len(), system.as_ref().map(Vec::len))?;
-        let mut acl = vec![0u8; acl_size as usize];
-        let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
-        // SAFETY: `acl` is writable for `acl_size` bytes.
-        checked_native!(
-            InitializeAcl,
-            check_win32(unsafe { InitializeAcl(acl_pointer, acl_size, ACL_REVISION) })
-        )?;
-        add_access_ace(acl_pointer, owner.as_mut_ptr().cast())?;
-        if let Some(system) = system.as_mut() {
-            add_access_ace(acl_pointer, system.as_mut_ptr().cast())?;
-        }
+        private_acl_size(owner.len(), system.as_ref().map(Vec::len)).and_then(|acl_size| {
+            let mut acl = vec![0u8; acl_size as usize];
+            let acl_pointer = acl.as_mut_ptr().cast::<ACL>();
+            // SAFETY: `acl` is writable for `acl_size` bytes.
+            checked_native!(
+                InitializeAcl,
+                check_win32(unsafe { InitializeAcl(acl_pointer, acl_size, ACL_REVISION) })
+            )?;
+            add_access_ace(acl_pointer, owner.as_mut_ptr().cast())?;
+            if let Some(system) = system.as_mut() {
+                add_access_ace(acl_pointer, system.as_mut_ptr().cast())?;
+            }
 
-        let mut descriptor = Box::new(unsafe {
-            // SAFETY: the descriptor is initialized before being passed to Windows.
-            std::mem::zeroed::<SECURITY_DESCRIPTOR>()
-        });
-        let descriptor_pointer = std::ptr::from_mut(descriptor.as_mut()).cast::<c_void>();
-        // SAFETY: `descriptor_pointer` points to writable descriptor storage.
-        checked_native!(
-            InitializeSecurityDescriptor,
-            check_win32(unsafe {
-                InitializeSecurityDescriptor(descriptor_pointer, SECURITY_DESCRIPTOR_REVISION_VALUE)
-            })
-        )?;
-        // SAFETY: the owner SID and descriptor remain valid for the call.
-        checked_native!(
-            SetDescriptorOwner,
-            check_win32(unsafe {
-                SetSecurityDescriptorOwner(descriptor_pointer, owner.as_mut_ptr().cast(), 0)
-            })
-        )?;
-        // SAFETY: `acl_pointer` and the descriptor remain valid for the call.
-        checked_native!(
-            SetDescriptorDacl,
-            check_win32(unsafe {
-                SetSecurityDescriptorDacl(descriptor_pointer, 1, acl_pointer, 0)
-            })
-        )?;
-        // SAFETY: the descriptor is initialized and writable.
-        checked_native!(
-            ProtectDescriptorDacl,
-            check_win32(unsafe {
-                SetSecurityDescriptorControl(
-                    descriptor_pointer,
-                    SE_DACL_PROTECTED,
-                    SE_DACL_PROTECTED,
-                )
-            })
-        )?;
+            let mut descriptor = Box::new(unsafe {
+                // SAFETY: the descriptor is initialized before being passed to Windows.
+                std::mem::zeroed::<SECURITY_DESCRIPTOR>()
+            });
+            let descriptor_pointer = std::ptr::from_mut(descriptor.as_mut()).cast::<c_void>();
+            // SAFETY: `descriptor_pointer` points to writable descriptor storage.
+            checked_native!(
+                InitializeSecurityDescriptor,
+                check_win32(unsafe {
+                    InitializeSecurityDescriptor(
+                        descriptor_pointer,
+                        SECURITY_DESCRIPTOR_REVISION_VALUE,
+                    )
+                })
+            )?;
+            // SAFETY: the owner SID and descriptor remain valid for the call.
+            checked_native!(
+                SetDescriptorOwner,
+                check_win32(unsafe {
+                    SetSecurityDescriptorOwner(descriptor_pointer, owner.as_mut_ptr().cast(), 0)
+                })
+            )?;
+            // SAFETY: `acl_pointer` and the descriptor remain valid for the call.
+            checked_native!(
+                SetDescriptorDacl,
+                check_win32(unsafe {
+                    SetSecurityDescriptorDacl(descriptor_pointer, 1, acl_pointer, 0)
+                })
+            )?;
+            // SAFETY: the descriptor is initialized and writable.
+            checked_native!(
+                ProtectDescriptorDacl,
+                check_win32(unsafe {
+                    SetSecurityDescriptorControl(
+                        descriptor_pointer,
+                        SE_DACL_PROTECTED,
+                        SE_DACL_PROTECTED,
+                    )
+                })
+            )?;
 
-        Ok(Self {
-            owner,
-            system,
-            administrators,
-            acl,
-            descriptor,
+            Ok(Self {
+                owner,
+                system,
+                administrators,
+                acl,
+                descriptor,
+            })
         })
     }
 
@@ -765,7 +791,8 @@ fn private_acl_size(owner_length: usize, system_length: Option<usize>) -> Result
         .into_iter()
         .flatten()
         .try_fold(size_of::<ACL>(), |size, sid_length| {
-            size.checked_add(fixed_ace_size)?.checked_add(sid_length)
+            size.checked_add(fixed_ace_size)
+                .and_then(|size| size.checked_add(sid_length))
         })
         .and_then(|size| u32::try_from(size).ok())
     else {
@@ -1081,43 +1108,48 @@ fn verify_acl(acl: *mut ACL, path: &Path, expected: &PrivateSecurity) -> Result<
 
     let mut owner_count = 0;
     let mut system_count = 0;
-    for index in 0..information.AceCount {
-        let mut ace = std::ptr::null_mut();
-        // SAFETY: `index` is bounded by the ACE count reported for this ACL.
-        checked_native!(
-            AclEntry,
-            check_win32(unsafe { GetAce(acl, index, &mut ace) })
-        )?;
-        // Fail closed if the API reports success without returning an ACE.
-        let ace = require_ace_pointer(ace, path, private_acl_error)?;
-        // SAFETY: `GetAce` succeeded and returned a non-null pointer to an ACE.
-        let header = unsafe { ace.cast::<ACE_HEADER>().as_ref() };
-        validate_private_ace_header(header, path)?;
-        // SAFETY: the ACE type and minimum size were checked above.
-        let allowed = unsafe { ace.cast::<ACCESS_ALLOWED_ACE>().as_ref() };
-        if allowed.Mask != FILE_ALL_ACCESS {
-            return Err(private_acl_error(path));
-        }
-        let sid = std::ptr::from_ref(&allowed.SidStart)
-            .cast_mut()
-            .cast::<c_void>();
-        if sid_matches(sid, &expected.owner) {
-            owner_count += 1;
-        } else if expected
-            .system
-            .as_ref()
-            .is_some_and(|system| sid_matches(sid, system))
-        {
-            system_count += 1;
-        } else {
-            return Err(private_acl_error(path));
-        }
-    }
-
-    if owner_count != 1 || system_count != usize::from(expected.system.is_some()) {
-        return Err(private_acl_error(path));
-    }
-    Ok(())
+    (0..information.AceCount)
+        .try_for_each(|index| {
+            let mut ace = std::ptr::null_mut();
+            // SAFETY: `index` is bounded by the ACE count reported for this ACL.
+            checked_native!(
+                AclEntry,
+                check_win32(unsafe { GetAce(acl, index, &mut ace) })
+            )?;
+            // Fail closed if the API reports success without returning an ACE.
+            require_ace_pointer(ace, path, private_acl_error).and_then(|ace| {
+                // SAFETY: `GetAce` succeeded and returned a non-null pointer to an ACE.
+                let header = unsafe { ace.cast::<ACE_HEADER>().as_ref() };
+                validate_private_ace_header(header, path)?;
+                // SAFETY: the ACE type and minimum size were checked above.
+                let allowed = unsafe { ace.cast::<ACCESS_ALLOWED_ACE>().as_ref() };
+                if allowed.Mask != FILE_ALL_ACCESS {
+                    return Err(private_acl_error(path));
+                }
+                let sid = std::ptr::from_ref(&allowed.SidStart)
+                    .cast_mut()
+                    .cast::<c_void>();
+                if sid_matches(sid, &expected.owner) {
+                    owner_count += 1;
+                } else if expected
+                    .system
+                    .as_ref()
+                    .is_some_and(|system| sid_matches(sid, system))
+                {
+                    system_count += 1;
+                } else {
+                    return Err(private_acl_error(path));
+                }
+                Ok(())
+            })
+        })
+        .and_then(|()| {
+            if owner_count != 1 || system_count != usize::from(expected.system.is_some()) {
+                Err(private_acl_error(path))
+            } else {
+                Ok(())
+            }
+        })
 }
 
 fn validate_private_ace_header(header: &ACE_HEADER, path: &Path) -> Result<()> {
@@ -1151,7 +1183,7 @@ fn verify_trusted_ancestor_acl(
         })
     )?;
 
-    for index in 0..information.AceCount {
+    (0..information.AceCount).try_for_each(|index| {
         let mut ace = std::ptr::null_mut();
         // SAFETY: `index` is bounded by the ACE count reported for this ACL.
         checked_native!(
@@ -1159,47 +1191,51 @@ fn verify_trusted_ancestor_acl(
             check_win32(unsafe { GetAce(acl, index, &mut ace) })
         )?;
         // Fail closed if the API reports success without returning an ACE.
-        let ace = require_ace_pointer(ace, path, trusted_ancestor_error)?;
-        // SAFETY: `GetAce` succeeded and returned a non-null pointer to an ACE.
-        let header = unsafe { ace.cast::<ACE_HEADER>().as_ref() };
-        require_ancestor_ace_prefix(header, path)?;
-        // SAFETY: every access-control ACE stores its access mask directly
-        // after the header; the size check above covers this read.
-        let mask = unsafe {
-            ace.as_ptr()
-                .cast::<u8>()
-                .add(size_of::<ACE_HEADER>())
-                .cast::<u32>()
-                .read_unaligned()
-        };
-        let flags = u32::from(header.AceFlags);
-        let mutates_current =
-            flags & INHERIT_ONLY_ACE == 0 && mask & RETAINED_PATH_MUTATION_ACCESS != 0;
-        // Root traversal does not create inheriting children. Each ordinary
-        // descendant is checked separately; a fixture root keeps the full check.
-        let check_descendants = !matches!(role, AncestorRole::VolumeRoot);
-        let mutates_descendant_directory = check_descendants
-            && flags & CONTAINER_INHERIT_ACE != 0
-            && mask & DESCENDANT_DIRECTORY_MUTATION_ACCESS != 0;
-        let mutates_descendant_file = check_descendants
-            && flags & OBJECT_INHERIT_ACE != 0
-            && mask & DESCENDANT_FILE_MUTATION_ACCESS != 0;
-        if !(mutates_current || mutates_descendant_directory || mutates_descendant_file)
-            || denied_ace(header.AceType)
-        {
-            continue;
-        }
-        require_mutating_ancestor_ace(header, path)?;
-        // SAFETY: the ACE type and minimum size were checked above.
-        let allowed = unsafe { ace.cast::<ACCESS_ALLOWED_ACE>().as_ref() };
-        let sid = std::ptr::from_ref(&allowed.SidStart)
-            .cast_mut()
-            .cast::<c_void>();
-        if !trusted_sid(sid, expected, role) {
-            return Err(trusted_ancestor_error(path));
-        }
-    }
-    Ok(())
+        require_ace_pointer(ace, path, trusted_ancestor_error).and_then(|ace| {
+            // SAFETY: `GetAce` succeeded and returned a non-null pointer to an ACE.
+            let header = unsafe { ace.cast::<ACE_HEADER>().as_ref() };
+            require_ancestor_ace_prefix(header, path).and_then(|()| {
+                // SAFETY: every access-control ACE stores its access mask directly
+                // after the header; the size check above covers this read.
+                let mask = unsafe {
+                    ace.as_ptr()
+                        .cast::<u8>()
+                        .add(size_of::<ACE_HEADER>())
+                        .cast::<u32>()
+                        .read_unaligned()
+                };
+                let flags = u32::from(header.AceFlags);
+                let mutates_current =
+                    flags & INHERIT_ONLY_ACE == 0 && mask & RETAINED_PATH_MUTATION_ACCESS != 0;
+                // Root traversal does not create inheriting children. Each ordinary
+                // descendant is checked separately; a fixture root keeps the full check.
+                let check_descendants = !matches!(role, AncestorRole::VolumeRoot);
+                let mutates_descendant_directory = check_descendants
+                    && flags & CONTAINER_INHERIT_ACE != 0
+                    && mask & DESCENDANT_DIRECTORY_MUTATION_ACCESS != 0;
+                let mutates_descendant_file = check_descendants
+                    && flags & OBJECT_INHERIT_ACE != 0
+                    && mask & DESCENDANT_FILE_MUTATION_ACCESS != 0;
+                if !(mutates_current || mutates_descendant_directory || mutates_descendant_file)
+                    || denied_ace(header.AceType)
+                {
+                    return Ok(());
+                }
+                require_mutating_ancestor_ace(header, path).and_then(|()| {
+                    // SAFETY: the ACE type and minimum size were checked above.
+                    let allowed = unsafe { ace.cast::<ACCESS_ALLOWED_ACE>().as_ref() };
+                    let sid = std::ptr::from_ref(&allowed.SidStart)
+                        .cast_mut()
+                        .cast::<c_void>();
+                    if trusted_sid(sid, expected, role) {
+                        Ok(())
+                    } else {
+                        Err(trusted_ancestor_error(path))
+                    }
+                })
+            })
+        })
+    })
 }
 
 fn require_ace_pointer(
@@ -2091,23 +2127,51 @@ mod tests {
 
     #[test]
     fn private_acl_requires_exact_trustees_access_and_unique_owner_grants() {
-        let security = PrivateSecurity::new().unwrap();
+        use windows_sys::Win32::Security::WinWorldSid;
+
+        let native = PrivateSecurity::new().unwrap();
+        let security = PrivateSecurity::from_sids(
+            native.owner.clone(),
+            native.administrators.clone(),
+            native.administrators.clone(),
+        )
+        .unwrap();
+        let world = well_known_sid(WinWorldSid).unwrap();
+        let owner_only_security =
+            PrivateSecurity::from_sids(native.owner.clone(), native.owner, native.administrators)
+                .unwrap();
         let path = Path::new("in-memory-private-acl");
+        for expected_security in [&security, &owner_only_security] {
+            let owner = TestAce {
+                sid: &expected_security.owner,
+                flags: PRIVATE_ACE_FLAGS,
+                mask: FILE_ALL_ACCESS,
+                denied: false,
+            };
+            let mut expected = vec![owner];
+            if let Some(system) = &expected_security.system {
+                expected.push(TestAce {
+                    sid: system,
+                    ..owner
+                });
+            }
+            let mut valid = fixture_acl(&expected);
+            verify_acl(valid.as_mut_ptr().cast(), path, expected_security).unwrap();
+        }
+
         let owner = TestAce {
             sid: &security.owner,
             flags: PRIVATE_ACE_FLAGS,
             mask: FILE_ALL_ACCESS,
             denied: false,
         };
-        let mut expected = vec![owner];
-        if let Some(system) = &security.system {
-            expected.push(TestAce {
-                sid: system,
+        let expected = vec![
+            owner,
+            TestAce {
+                sid: security.system.as_ref().unwrap(),
                 ..owner
-            });
-        }
-        let mut valid = fixture_acl(&expected);
-        verify_acl(valid.as_mut_ptr().cast(), path, &security).unwrap();
+            },
+        ];
         for changed in [
             TestAce { flags: 0, ..owner },
             TestAce {
@@ -2119,7 +2183,7 @@ mod tests {
                 ..owner
             },
             TestAce {
-                sid: &security.administrators,
+                sid: &world,
                 ..owner
             },
         ] {
@@ -2270,13 +2334,13 @@ mod tests {
             queried.set(queried.get() + 1);
             DRIVE_FIXED
         };
-        let accepted = is_local_fixed_drive_with(Path::new(r"\\server\share\capture"), drive_type);
+        let accepted = is_local_fixed_drive_with(Path::new(r"\\server\share\capture"), &drive_type);
 
         assert!(!accepted);
         assert_eq!(queried.get(), 0);
         assert!(is_local_fixed_drive_with(
             Path::new(r"C:\fixture"),
-            drive_type
+            &drive_type
         ));
         assert_eq!(queried.get(), 1);
         assert!(
@@ -2289,12 +2353,12 @@ mod tests {
 
     #[test]
     fn mapped_remote_drive_is_rejected() {
-        assert!(!is_local_fixed_drive_with(Path::new(r"Z:\capture"), |_| 4));
+        assert!(!is_local_fixed_drive_with(Path::new(r"Z:\capture"), &|_| 4));
     }
 
     #[test]
     fn local_fixed_drive_is_accepted() {
-        assert!(is_local_fixed_drive_with(Path::new(r"C:\capture"), |_| {
+        assert!(is_local_fixed_drive_with(Path::new(r"C:\capture"), &|_| {
             DRIVE_FIXED
         }));
     }
@@ -2303,8 +2367,8 @@ mod tests {
     fn verbatim_disk_is_accepted_only_as_canonical_output() {
         let path = Path::new(r"\\?\C:\capture");
 
-        assert!(!is_local_fixed_drive_with(path, |_| DRIVE_FIXED));
-        assert!(is_local_fixed_drive_with_options(path, true, |_| {
+        assert!(!is_local_fixed_drive_with(path, &|_| DRIVE_FIXED));
+        assert!(is_local_fixed_drive_with_options(path, true, &|_| {
             DRIVE_FIXED
         }));
         assert!(reject_ambiguous_path(path).is_err());

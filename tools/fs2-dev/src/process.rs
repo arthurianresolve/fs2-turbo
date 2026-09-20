@@ -1,7 +1,6 @@
 use std::ffi::{OsStr, OsString};
 #[cfg(all(test, unix))]
 use std::fs;
-#[cfg(windows)]
 use std::fs::File;
 use std::io::{Read as _, Seek as _};
 #[cfg(all(test, unix))]
@@ -44,15 +43,17 @@ fn cargo_program(value: Option<OsString>) -> OsString {
 
 pub(crate) fn run(command: &mut Command, label: &str) -> Result<()> {
     println!("+ {label}");
-    let execution = execute(command, process_timeout()?);
-    if execution.outcome.succeeded() {
-        Ok(())
-    } else {
-        Err(invalid_data(format!(
-            "{label} failed: {}",
-            execution.outcome.description()
-        )))
-    }
+    process_timeout().and_then(|timeout| {
+        let execution = execute(command, timeout);
+        if execution.outcome.succeeded() {
+            Ok(())
+        } else {
+            Err(invalid_data(format!(
+                "{label} failed: {}",
+                execution.outcome.description()
+            )))
+        }
+    })
 }
 
 #[cfg(windows)]
@@ -62,19 +63,17 @@ fn capture_root() -> Result<(PathBuf, Vec<File>)> {
         .filter_map(std::env::var_os)
         .map(PathBuf::from)
         .collect::<Vec<_>>();
-    if let Ok(executable) = std::env::current_exe()
-        && let Some(parent) = executable.parent()
-    {
-        candidates.push(parent.to_path_buf());
-    }
+    candidates.extend(
+        std::env::current_exe()
+            .ok()
+            .and_then(|executable| executable.parent().map(|parent| parent.to_path_buf())),
+    );
 
     capture_root_from(candidates)
 }
 
 #[cfg(windows)]
-fn capture_root_from(
-    candidates: impl IntoIterator<Item = PathBuf>,
-) -> Result<(PathBuf, Vec<File>)> {
+fn capture_root_from(candidates: Vec<PathBuf>) -> Result<(PathBuf, Vec<File>)> {
     let mut rejected = Vec::new();
     for root in candidates {
         // Reject UNC and mapped roots before dereferencing the candidate path.
@@ -105,7 +104,7 @@ fn capture_root_from(
 }
 
 pub(crate) fn capture(command: &mut Command, label: &str) -> Result<Output> {
-    capture_with_backend(command, label, &mut NativeCaptureBackend)
+    capture_with_backend(command, label, &mut NativeCaptureBackend, &process_timeout)
 }
 
 struct CaptureDirectory {
@@ -185,13 +184,14 @@ fn capture_directory(backend: &mut dyn CaptureBackend) -> Result<CaptureDirector
     #[cfg(windows)]
     {
         let (root, guard) = backend.root()?;
-        let temporary = capture_stage(backend.temporary_in(&root), "create capture directory")?;
+        let temporary =
+            capture_tempdir_stage(backend.temporary_in(&root), "create capture directory")?;
         let mut directory = CaptureDirectory {
             _guard: guard,
             temporary,
         };
         // The parent is already private; validate and retain the randomized child before file I/O.
-        directory._guard.push(capture_stage(
+        directory._guard.push(capture_file_stage(
             backend.harden(directory.temporary.path()),
             "harden capture directory",
         )?);
@@ -209,21 +209,24 @@ fn capture_with_backend(
     command: &mut Command,
     label: &str,
     backend: &mut dyn CaptureBackend,
+    timeout: &dyn Fn() -> Result<Duration>,
 ) -> Result<Output> {
     let directory = capture_directory(backend)?;
-    let mut stdout_file = capture_stage(
+    let mut stdout_file = capture_file_stage(
         backend.file(directory.temporary.path()),
         "create secure stdout capture",
     )?;
-    let mut stderr_file = capture_stage(
+    let mut stderr_file = capture_file_stage(
         backend.file(directory.temporary.path()),
         "create secure stderr capture",
     )?;
     let result = (|| {
+        let stdout_capture = backend.clone_file(&stdout_file)?;
+        let stderr_capture = backend.clone_file(&stderr_file)?;
         command
-            .stdout(Stdio::from(backend.clone_file(&stdout_file)?))
-            .stderr(Stdio::from(backend.clone_file(&stderr_file)?));
-        let execution = execute(command, process_timeout()?);
+            .stdout(Stdio::from(stdout_capture))
+            .stderr(Stdio::from(stderr_capture));
+        let execution = execute(command, timeout()?);
         backend.rewind(&mut stdout_file)?;
         backend.rewind(&mut stderr_file)?;
         let mut stdout = Vec::new();
@@ -238,11 +241,43 @@ fn capture_with_backend(
     result
 }
 
-fn capture_stage<T>(result: Result<T>, operation: &str) -> Result<T> {
+#[cfg(any(windows, test, coverage))]
+fn capture_tempdir_stage(
+    result: Result<tempfile::TempDir>,
+    operation: &str,
+) -> Result<tempfile::TempDir> {
     match result {
         Ok(value) => Ok(value),
         Err(error) => Err(invalid_data(format!("unable to {operation}: {error}"))),
     }
+}
+
+fn capture_file_stage(result: Result<File>, operation: &str) -> Result<File> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(error) => Err(invalid_data(format!("unable to {operation}: {error}"))),
+    }
+}
+
+#[cfg(all(coverage, not(test)))]
+pub(crate) fn run_capture_stage_coverage_fixture() -> bool {
+    if std::env::var_os("FS2_DEV_COVERAGE_CAPTURE_STAGE_FAILURES").as_deref()
+        != Some(OsStr::new("1"))
+    {
+        return false;
+    }
+
+    drop(capture_tempdir_stage(
+        Err(std::io::Error::other("coverage fixture").into()),
+        "create capture directory",
+    ));
+    drop(capture_file_stage(
+        Err(std::io::Error::other("coverage fixture").into()),
+        "create secure capture",
+    ));
+    #[cfg(windows)]
+    drop(capture_root_from(vec![PathBuf::from("relative")]));
+    true
 }
 
 fn captured_output(
@@ -271,13 +306,21 @@ fn captured_output(
 }
 
 pub(crate) fn toolchain_key() -> Result<String> {
-    let identity = if let Some(toolchain) = std::env::var_os("RUSTUP_TOOLCHAIN") {
-        display_os(&toolchain)
+    if let Some(toolchain) = std::env::var_os("RUSTUP_TOOLCHAIN") {
+        Ok(toolchain_key_for_identity(&display_os(&toolchain)))
     } else {
-        let output = capture(Command::new("rustc").arg("-vV"), "rustc -vV")?;
-        String::from_utf8(output.stdout)?
-    };
-    Ok(toolchain_key_for_identity(&identity))
+        capture(Command::new("rustc").arg("-vV"), "rustc -vV").and_then(toolchain_key_from_output)
+    }
+}
+
+fn toolchain_key_from_output(output: std::process::Output) -> Result<String> {
+    toolchain_key_from_bytes(output.stdout)
+}
+
+fn toolchain_key_from_bytes(stdout: Vec<u8>) -> Result<String> {
+    String::from_utf8(stdout)
+        .map(|identity| toolchain_key_for_identity(&identity))
+        .map_err(Into::into)
 }
 
 fn toolchain_key_for_identity(identity: &str) -> String {
@@ -563,38 +606,39 @@ fn waitid_observe_child_exit(
     child: &std::process::Child,
     timeout: Duration,
 ) -> std::io::Result<ChildObservation> {
-    let pid = process_group_id(child)?;
-    let started = Instant::now();
-    loop {
-        let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
-        let result = unsafe {
-            // SAFETY: `information` is writable output storage. WNOWAIT keeps
-            // the direct child waitable so its PID/PGID cannot be reused before
-            // group termination and the later `Child::wait` reap.
-            libc::waitid(
-                libc::P_PID,
-                pid as libc::id_t,
-                information.as_mut_ptr(),
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if result != 0 {
-            return Err(std::io::Error::last_os_error());
-        }
-        let information = unsafe {
-            // SAFETY: waitid returned success and initialized siginfo_t.
-            information.assume_init()
-        };
-        if unsafe { information.si_pid() } != 0 {
-            return Ok(ChildObservation::Exited(None));
-        }
+    process_group_id(child).and_then(|pid| {
+        let started = Instant::now();
+        loop {
+            let mut information = std::mem::MaybeUninit::<libc::siginfo_t>::zeroed();
+            let result = unsafe {
+                // SAFETY: `information` is writable output storage. WNOWAIT keeps
+                // the direct child waitable so its PID/PGID cannot be reused before
+                // group termination and the later `Child::wait` reap.
+                libc::waitid(
+                    libc::P_PID,
+                    pid as libc::id_t,
+                    information.as_mut_ptr(),
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let information = unsafe {
+                // SAFETY: waitid returned success and initialized siginfo_t.
+                information.assume_init()
+            };
+            if unsafe { information.si_pid() } != 0 {
+                return Ok(ChildObservation::Exited(None));
+            }
 
-        let elapsed = started.elapsed();
-        if elapsed >= timeout {
-            return Ok(ChildObservation::TimedOut);
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(ChildObservation::TimedOut);
+            }
+            std::thread::sleep(PROCESS_GROUP_EXIT_POLL_INTERVAL.min(timeout - elapsed));
         }
-        std::thread::sleep(PROCESS_GROUP_EXIT_POLL_INTERVAL.min(timeout - elapsed));
-    }
+    })
 }
 
 #[cfg(all(
@@ -988,18 +1032,47 @@ pub(crate) fn display_os(value: &OsStr) -> String {
 mod tests {
     use super::*;
 
+    fn outcome_value(outcome: &ProcessOutcome) -> serde_json::Value {
+        serde_json::to_value(outcome)
+            .expect("process outcomes contain only JSON-serializable values")
+    }
+
+    fn outcome_kind(outcome: &ProcessOutcome) -> String {
+        outcome_value(outcome)["kind"]
+            .as_str()
+            .expect("serialized process outcomes retain their kind tag")
+            .to_owned()
+    }
+
     #[test]
-    fn scalar_capture_stage_keeps_success_and_error_context() {
-        assert_eq!(capture_stage(Ok(7_i32), "read fixture").unwrap(), 7);
-        let error = capture_stage::<i32>(
+    fn capture_stages_keep_success_and_error_context() {
+        let temporary = tempfile::tempdir().unwrap();
+        assert!(capture_tempdir_stage(Ok(temporary), "create fixture directory").is_ok());
+        let error = capture_tempdir_stage(
             Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fixture denial").into()),
-            "read fixture",
+            "create fixture directory",
         )
         .unwrap_err();
-        assert_eq!(error.to_string(), "unable to read fixture: fixture denial");
+        assert_eq!(
+            error.to_string(),
+            "unable to create fixture directory: fixture denial"
+        );
         assert_eq!(
             error.downcast_ref::<std::io::Error>().unwrap().kind(),
             std::io::ErrorKind::InvalidData
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let file = File::create(root.path().join("capture")).unwrap();
+        assert!(capture_file_stage(Ok(file), "create fixture file").is_ok());
+        let error = capture_file_stage(
+            Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "fixture denial").into()),
+            "create fixture file",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "unable to create fixture file: fixture denial"
         );
     }
 
@@ -1167,7 +1240,12 @@ mod tests {
                 directory: None,
             };
             let mut command = fixture_command(0);
-            let result = capture_with_backend(&mut command, "capture fixture", &mut backend);
+            let result = capture_with_backend(
+                &mut command,
+                "capture fixture",
+                &mut backend,
+                &process_timeout,
+            );
             if fail_at == CALLS {
                 assert!(result.unwrap().status.success());
                 assert_eq!(backend.calls, CALLS);
@@ -1187,6 +1265,22 @@ mod tests {
                 );
             }
         }
+
+        let mut backend = FailingCaptureBackend {
+            native: NativeCaptureBackend,
+            fail_at: usize::MAX,
+            calls: 0,
+            directory: None,
+        };
+        let mut command = fixture_command(0);
+        let error = capture_with_backend(&mut command, "capture fixture", &mut backend, &|| {
+            Err(invalid_data("synthetic timeout failure"))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("synthetic timeout failure"));
+        assert_eq!(backend.calls, CALLS - 4);
+        assert!(backend.directory.is_some_and(|path| !path.exists()));
     }
 
     #[test]
@@ -1211,20 +1305,12 @@ mod tests {
                 assert_eq!(backend.events, expected);
                 assert!(!execution.outcome.succeeded());
                 assert!(execution.outcome.description().contains(stage));
-                match stage {
-                    "spawn" => assert!(matches!(
-                        execution.outcome,
-                        ProcessOutcome::SpawnFailed { .. }
-                    )),
-                    "observe" => assert!(matches!(
-                        execution.outcome,
-                        ProcessOutcome::RunnerFailed { .. }
-                    )),
-                    _ => assert!(matches!(
-                        execution.outcome,
-                        ProcessOutcome::ContainmentFailed { .. }
-                    )),
-                }
+                let expected_kind = match stage {
+                    "spawn" => "spawn-failed",
+                    "observe" => "runner-failed",
+                    _ => "containment-failed",
+                };
+                assert_eq!(outcome_kind(&execution.outcome), expected_kind);
                 if matches!(stage, "attach" | "observe") && cleanup_error.is_some() {
                     assert!(execution.outcome.description().contains("cleanup failed"));
                 }
@@ -1256,9 +1342,11 @@ mod tests {
                 Duration::from_millis(17),
                 &mut backend,
             );
-            assert!(matches!(execution.outcome, ProcessOutcome::TimedOut {
-                timeout_ms: 17, reaped, kill_error: Some(_),
-            } if reaped == status.is_some()));
+            let outcome = outcome_value(&execution.outcome);
+            assert_eq!(outcome["kind"].as_str(), Some("timed-out"));
+            assert_eq!(outcome["timeout_ms"].as_u64(), Some(17));
+            assert_eq!(outcome["reaped"].as_bool(), Some(status.is_some()));
+            assert!(outcome["kill_error"].as_str().is_some());
             assert_eq!(backend.events.last(), Some(&"cleanup"));
         }
     }
@@ -1266,19 +1354,20 @@ mod tests {
     #[test]
     fn reaping_handles_fallback_kill_second_wait_and_verification_failures() {
         use std::collections::VecDeque;
-        for case in 0..5 {
+        for case in 0..6 {
             let mut waits = match case {
                 0 => VecDeque::from([Ok(Some(fixture_status(0)))]),
                 1 => VecDeque::from([Err(std::io::Error::other("wait failed"))]),
                 2 => VecDeque::from([Ok(None), Ok(None)]),
                 3 => VecDeque::from([Ok(None), Err(std::io::Error::other("second wait failed"))]),
-                _ => VecDeque::from([Ok(None), Ok(Some(fixture_status(7)))]),
+                4 => VecDeque::from([Ok(None), Ok(Some(fixture_status(7)))]),
+                _ => VecDeque::from([Ok(Some(fixture_status(0)))]),
             };
             let mut kills = 0;
             let (status, errors) = reap_terminated_child(
                 &mut waits,
                 |_| {
-                    if case == 1 {
+                    if matches!(case, 1 | 5) {
                         Err(std::io::Error::other("terminate failed"))
                     } else {
                         Ok(())
@@ -1295,7 +1384,7 @@ mod tests {
                 |waits| waits.pop_front().unwrap(),
             );
             assert!(waits.is_empty());
-            assert_eq!(status.is_some(), matches!(case, 0 | 4));
+            assert_eq!(status.is_some(), matches!(case, 0 | 4 | 5));
             assert_eq!(errors.is_empty(), matches!(case, 0 | 4));
             assert_eq!(kills, usize::from(case != 0));
             if case == 1 {
@@ -1329,14 +1418,13 @@ mod tests {
             cargo_program(Some(OsString::from("custom cargo"))),
             OsString::from("custom cargo")
         );
-        assert_eq!(capture_stage(Ok(7), "fixture").unwrap(), 7);
         for operation in [
             "create capture directory",
             "harden capture directory",
             "create secure stdout capture",
             "create secure stderr capture",
         ] {
-            let error = capture_stage::<()>(
+            let error = capture_file_stage(
                 Err(std::io::Error::other("fixture failure").into()),
                 operation,
             )
@@ -1344,15 +1432,13 @@ mod tests {
             .to_string();
             assert_eq!(error, format!("unable to {operation}: fixture failure"));
         }
-        assert!(matches!(
-            status_outcome_with_code(fixture_status(0), None),
-            ProcessOutcome::Terminated { .. }
-        ));
+        let terminated = status_outcome_with_code(fixture_status(0), None);
+        assert_eq!(outcome_kind(&terminated), "terminated");
         #[cfg(not(unix))]
-        assert!(matches!(
-            status_outcome_with_code(fixture_status(0), None),
-            ProcessOutcome::Terminated { detail } if detail == "no native exit code was reported"
-        ));
+        assert_eq!(
+            outcome_value(&terminated)["detail"].as_str(),
+            Some("no native exit code was reported")
+        );
     }
 
     #[test]
@@ -1405,7 +1491,7 @@ mod tests {
         let (root, _guards) = capture_root().unwrap();
         let candidate = tempfile::tempdir_in(root).unwrap();
         let _private = windows_security::harden_new_private_directory(candidate.path()).unwrap();
-        let error = capture_root_from([
+        let error = capture_root_from(vec![
             PathBuf::from("relative"),
             PathBuf::from(r"\\server\share\not-contacted"),
             candidate.path().join("missing"),
@@ -1415,7 +1501,7 @@ mod tests {
         assert!(error.contains("unable to bind capture temp ancestry"));
         let file = std::fs::File::create(candidate.path().join(".fs2-secure-capture")).unwrap();
         drop(file);
-        assert!(capture_root_from([candidate.path().to_path_buf()]).is_err());
+        assert!(capture_root_from(vec![candidate.path().to_path_buf()]).is_err());
     }
 
     #[cfg(windows)]
@@ -1568,27 +1654,22 @@ mod tests {
         for code in [0, 7] {
             let execution = finished_execution(Some(fixture_status(code)), None);
             assert_eq!(execution.status.unwrap().code(), Some(code));
-            assert!(
-                matches!(execution.outcome, ProcessOutcome::Exited { code: actual } if actual == code)
+            assert_eq!(
+                outcome_value(&execution.outcome)["code"].as_i64(),
+                Some(i64::from(code))
             );
             let execution = finished_execution(
                 Some(fixture_status(code)),
                 Some("cleanup fixture".to_owned()),
             );
             assert_eq!(execution.status.unwrap().code(), Some(code));
-            assert!(matches!(
-                execution.outcome,
-                ProcessOutcome::ContainmentFailed { .. }
-            ));
+            assert_eq!(outcome_kind(&execution.outcome), "containment-failed");
             assert!(execution.outcome.description().contains("cleanup fixture"));
         }
         for error in [None, Some("missing status fixture".to_owned())] {
             let execution = finished_execution(None, error);
             assert!(execution.status.is_none());
-            assert!(matches!(
-                execution.outcome,
-                ProcessOutcome::ContainmentFailed { .. }
-            ));
+            assert_eq!(outcome_kind(&execution.outcome), "containment-failed");
             assert!(!execution.outcome.succeeded());
         }
     }
@@ -1662,10 +1743,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let mut command = Command::new(directory.path().join("missing-executable"));
         let execution = execute(&mut command, Duration::from_secs(5));
-        assert!(matches!(
-            execution.outcome,
-            ProcessOutcome::SpawnFailed { .. }
-        ));
+        assert_eq!(outcome_kind(&execution.outcome), "spawn-failed");
         assert!(execution.status.is_none());
         let error = capture(&mut command, "missing fixture")
             .unwrap_err()
@@ -1781,6 +1859,11 @@ mod tests {
         assert_eq!(key.len(), 64);
         assert!(key.chars().all(|character| character.is_ascii_hexdigit()));
         assert_eq!(key, toolchain_key_for_identity(identity));
+        assert_eq!(
+            key,
+            toolchain_key_from_bytes(identity.as_bytes().to_vec()).unwrap()
+        );
+        assert!(toolchain_key_from_bytes(vec![0xff]).is_err());
         assert_ne!(key, toolchain_key_for_identity("rustc 1.88.0"));
     }
 
@@ -2015,7 +2098,7 @@ mod tests {
         };
 
         let execution = execute(&mut command, Duration::from_millis(20));
-        assert!(matches!(execution.outcome, ProcessOutcome::TimedOut { .. }));
+        assert_eq!(outcome_kind(&execution.outcome), "timed-out");
         assert!(execution.status.is_some());
     }
 
@@ -2026,10 +2109,7 @@ mod tests {
         command.args(["-c", "exit 0"]);
 
         let execution = execute(&mut command, Duration::from_secs(5));
-        assert!(matches!(
-            execution.outcome,
-            ProcessOutcome::Exited { code: 0 }
-        ));
+        assert_eq!(outcome_value(&execution.outcome)["code"].as_i64(), Some(0));
         assert!(execution.status.is_some());
     }
 
@@ -2048,10 +2128,7 @@ mod tests {
         ]);
 
         let execution = execute(&mut command, Duration::from_secs(5));
-        assert!(matches!(
-            execution.outcome,
-            ProcessOutcome::Exited { code: 7 }
-        ));
+        assert_eq!(outcome_value(&execution.outcome)["code"].as_i64(), Some(7));
         assert_eq!(execution.status.and_then(|status| status.code()), Some(7));
         let (descendant_pid, process_group) = read_process_identities(&identities);
         assert_process_group_absent(descendant_pid, process_group);
@@ -2072,10 +2149,7 @@ mod tests {
         ]);
 
         let execution = execute(&mut command, Duration::from_secs(5));
-        assert!(matches!(
-            execution.outcome,
-            ProcessOutcome::Exited { code: 0 }
-        ));
+        assert_eq!(outcome_value(&execution.outcome)["code"].as_i64(), Some(0));
         let (descendant_pid, process_group) = read_process_identities(&identities);
         assert_process_group_absent(descendant_pid, process_group);
     }
@@ -2095,14 +2169,10 @@ mod tests {
         ]);
 
         let execution = execute(&mut command, Duration::from_millis(200));
-        assert!(matches!(
-            execution.outcome,
-            ProcessOutcome::TimedOut {
-                reaped: true,
-                kill_error: None,
-                ..
-            }
-        ));
+        let outcome = outcome_value(&execution.outcome);
+        assert_eq!(outcome["kind"].as_str(), Some("timed-out"));
+        assert_eq!(outcome["reaped"].as_bool(), Some(true));
+        assert!(outcome.get("kill_error").is_none());
         assert!(execution.status.is_some());
         let (descendant_pid, process_group) = read_process_identities(&identities);
         assert_process_group_absent(descendant_pid, process_group);
@@ -2116,10 +2186,11 @@ mod tests {
         let mut containment = ProcessContainment::configure(&mut command).unwrap();
         let mut child = command.spawn().unwrap();
         containment.attach(&child).unwrap();
-        assert!(matches!(
-            observe_child_exit(&mut child, Duration::from_secs(5)).unwrap(),
-            ChildObservation::Exited(None)
-        ));
+        let observation = observe_child_exit(&mut child, Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            std::mem::discriminant(&observation),
+            std::mem::discriminant(&ChildObservation::Exited(None))
+        );
 
         let (status, cleanup_error) =
             complete_observed_exit_with(&containment, &mut child, None, |_containment, _child| {
