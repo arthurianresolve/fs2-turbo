@@ -329,7 +329,7 @@ fn synthetic_export(target: &str, profile: &str) -> Value {
         "src/synthetic_fixture.rs",
         7,
         1,
-        private_hits,
+        1,
     ));
     functions.push(synthetic_function(
         "13invalid_stats",
@@ -350,7 +350,7 @@ fn synthetic_export(target: &str, profile: &str) -> Value {
         "src/synthetic_fixture.rs",
         10,
         1,
-        0,
+        u64::from(profile == "unit"),
     ));
     let mut alternate = synthetic_function(
         "synthetic_alternate_shape",
@@ -361,7 +361,7 @@ fn synthetic_export(target: &str, profile: &str) -> Value {
     );
     alternate["regions"][0][2] = json!(11);
     functions.push(alternate);
-    for hits in [0, 1] {
+    for hits in [u64::from(profile == "unit"), 1] {
         functions.push(synthetic_function(
             &format!("external_fixture_{hits}"),
             "/rustc/synthetic-fixture/library/core/src/option.rs",
@@ -415,13 +415,17 @@ fn coverage_command_emits_diagnostics_for_every_native_policy() {
         let stdout = String::from_utf8(output.stdout).unwrap();
         assert!(stdout.contains(&format!("coverage policy satisfied for {target}")));
         assert!(stdout.contains("review=defensive-boundary"));
-        assert!(stdout.contains("review=unclassified"));
+        assert!(!stdout.contains("review=unclassified"));
         assert!(stdout.contains("instantiation gap"));
         let bytes = fs::read(fixture.report_path()).unwrap();
         assert!(bytes.ends_with(b"\n"));
         let report: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["schema_version"], 5);
         assert_eq!(report["target"], target);
+        assert_eq!(
+            report["instantiation_policy"]["combined_profile"],
+            "compiler-sensitive-diagnostic"
+        );
         let intended = if target == "x86_64-pc-windows-msvc" {
             36
         } else {
@@ -434,27 +438,37 @@ fn coverage_command_emits_diagnostics_for_every_native_policy() {
         let profiles = report["profiles"].as_array().unwrap();
         assert_eq!(profiles.len(), 3);
         for profile in profiles {
-            let integration = profile["profile"] == "integration";
+            let name = profile["profile"].as_str().unwrap();
+            let integration = name == "integration";
             let entries = intended + 7;
-            let executed = intended + if integration { 2 } else { 5 };
+            let executed = intended
+                + match name {
+                    "integration" => 3,
+                    "unit" => 7,
+                    _ => 5,
+                };
             assert_eq!(
                 profile["json_entries"],
                 json!({"count": entries, "covered": executed})
             );
             assert_eq!(
                 profile["external_json_entries"],
-                json!({"count": 2, "covered": 1})
+                json!({"count": 2, "covered": if name == "unit" { 2 } else { 1 }})
             );
-            assert_eq!(profile["asymmetric_definition_groups"], 1);
-            assert!(
+            assert_eq!(
+                profile["asymmetric_definition_groups"],
+                usize::from(name != "unit")
+            );
+            assert_eq!(
                 profile["definitions"]
                     .as_array()
                     .unwrap()
                     .iter()
-                    .any(|definition| definition["ownership"] == "compiler-asymmetric")
+                    .any(|definition| definition["ownership"] == "compiler-asymmetric"),
+                name != "unit"
             );
             let union = &profile["source_location_execution_union"];
-            assert_eq!(union["informational_only"], true);
+            assert_eq!(union["policy_enforced"], true);
             assert_eq!(union["multi_topology_locations"], 1);
             if integration {
                 assert_eq!(union["uncovered_groups_with_executed_location"], 1);
@@ -535,6 +549,22 @@ fn coverage_command_preserves_reports_when_any_profile_is_rejected() {
         fixture.assert_rejected("coverage regression", &previous);
         fs::write(&path, original).unwrap();
     }
+
+    let path = fixture.directory.path().join("combined.json");
+    let original = fs::read_to_string(&path).unwrap();
+    let mut altered: Value = serde_json::from_str(&original).unwrap();
+    altered["data"][0]["functions"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|function| {
+            function["filenames"][0]
+                .as_str()
+                .is_some_and(|filename| filename.starts_with("/rustc/"))
+        });
+    fs::write(&path, altered.to_string()).unwrap();
+    fixture.assert_rejected("combined source-location union is empty", &previous);
+    fs::write(&path, original).unwrap();
+
     fs::write(
         fixture.directory.path().join("coverage.lcov"),
         "SF:src/synthetic_fixture.rs\nDA:1,invalid\nend_of_record\n",

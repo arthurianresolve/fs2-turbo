@@ -31,23 +31,11 @@ pub(crate) struct ByteSpace {
 }
 
 pub(crate) fn legacy_space(root_path: &[u16], kind: SpaceKind) -> Result<u64> {
-    legacy_space_with(
-        kind,
-        || byte_space(root_path),
-        || cluster_geometry(root_path),
-    )
-}
-
-pub(crate) fn legacy_space_with(
-    kind: SpaceKind,
-    byte_query: impl FnOnce() -> Result<ByteSpace>,
-    geometry_query: impl FnOnce() -> Result<u64>,
-) -> Result<u64> {
     match kind {
-        SpaceKind::Free => byte_query().map(|space| space.actual_free),
-        SpaceKind::Available => byte_query().map(|space| space.caller_available),
-        SpaceKind::Total => byte_query().map(|space| space.caller_total),
-        SpaceKind::AllocationGranularity => geometry_query(),
+        SpaceKind::Free => Ok(query_byte_space(root_path)?.actual_free),
+        SpaceKind::Available => Ok(query_byte_space(root_path)?.caller_available),
+        SpaceKind::Total => Ok(query_byte_space(root_path)?.caller_total),
+        SpaceKind::AllocationGranularity => query_cluster_geometry(root_path),
     }
 }
 
@@ -131,3 +119,14 @@ fn byte_space_domain_error() -> Error {
         "filesystem available space exceeds physical free space",
     )
 }
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(not(test))]
+use self::{byte_space as query_byte_space, cluster_geometry as query_cluster_geometry};
+#[cfg(test)]
+use tests::{query_byte_space, query_cluster_geometry};
+
+#[cfg(test)]
+pub(crate) use tests::legacy_space_with;

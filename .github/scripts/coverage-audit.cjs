@@ -393,17 +393,52 @@ function audit(root, directory, profile, expected, policy) {
     if (profile === 'primary' || profile === 'msrv') {
       const family = profile === 'primary' ? 'coverage-' : 'coverage-msrv-';
       diagnostics = JSON.parse(evidence.get(family + 'diagnostics-' + target + '.json'));
-      requireValue(diagnostics.schema_version === 4 && diagnostics.target === target, 'Invalid diagnostic identity');
-      const combined = diagnostics.profiles.filter(p => p.profile === 'combined');
-      requireValue(combined.length === 1, 'Missing or duplicate combined diagnostic');
-      const current = combined[0];
+      requireValue(diagnostics.schema_version === 5 && diagnostics.target === target, 'Invalid diagnostic identity');
+      requireValue(JSON.stringify(diagnostics.instantiation_policy) === JSON.stringify({
+        unit_profile: 'required-complete', combined_profile: 'compiler-sensitive-diagnostic',
+        integration_profile: 'reviewed-unit-owned-residuals',
+      }), 'Invalid instantiation policy');
+      requireValue(Array.isArray(diagnostics.profiles), 'Missing profile diagnostics');
+      const profiles = new Map();
+      for (const diagnostic of diagnostics.profiles) {
+        requireValue(typeof diagnostic.profile === 'string' && !profiles.has(diagnostic.profile),
+          'Missing or duplicate profile diagnostic');
+        profiles.set(diagnostic.profile, diagnostic);
+      }
+      sameList([...profiles.keys()].sort(), ['combined', 'integration', 'unit'], 'Profile diagnostics differ');
+      const combined = profiles.get('combined'), unit = profiles.get('unit'), integration = profiles.get('integration');
+      const combinedInstantiations = counter(combined.llvm_instantiations, 'Raw combined instantiations');
+      sameList([JSON.stringify(combinedInstantiations)], [JSON.stringify(totals.instantiations)],
+        'Diagnostic/LLVM instantiations differ');
+      const unitInstantiations = counter(unit.llvm_instantiations, 'Unit instantiations');
+      requireValue(unitInstantiations.covered === unitInstantiations.count,
+        'Unit instantiations are below 100%');
+      requireValue(unit.asymmetric_definition_groups === 0, 'Unit profile contains compiler-asymmetric definitions');
+      for (const [name, diagnostic] of profiles) {
+        const definitions = counter(diagnostic.source_definitions, name + ' source definitions');
+        requireValue(Array.isArray(diagnostic.definitions)
+          && diagnostic.definitions.length === definitions.count
+          && diagnostic.definitions.filter(d => d.covered_entries > 0).length === definitions.covered,
+        'Source-definition diagnostic mismatch');
+        requireValue(diagnostic.definitions.every(d => d.ownership !== 'unowned'),
+          'Unowned source definition in ' + name + ' profile');
+        const union = diagnostic.source_location_execution_union;
+        const locations = counter(union?.locations, name + ' source-location union');
+        requireValue(union.policy_enforced === true && Array.isArray(union.records),
+          'Invalid source-location policy diagnostic');
+        if (name === 'combined' || name === 'unit') {
+          requireValue(locations.covered === locations.count, 'Incomplete ' + name + ' source-location union');
+        } else {
+          requireValue(union.records.filter(record => !record.executed).every(record =>
+            record.all_uncovered_topologies_unit_owned === true && record.reviewed_integration_gap),
+          'Unreviewed or unowned integration source-location gap');
+        }
+      }
+      const current = combined;
       const entries = {count: data.functions.length, covered: data.functions.filter(f => f.count > 0).length};
       sameList([JSON.stringify(counter(current.json_entries, 'JSON entries'))],
         [JSON.stringify(counter(entries, 'LLVM function entries'))], 'Diagnostic/LLVM function entries differ');
       const definitions = counter(current.source_definitions, 'Source definitions');
-      requireValue(current.definitions.length === definitions.count
-        && current.definitions.filter(d => d.covered_entries > 0).length === definitions.covered,
-      'Source-definition diagnostic mismatch');
       if (profile === 'primary') {
         const baseline = policy.targets[target];
         requireValue(baseline, 'Missing primary baseline');
@@ -416,6 +451,22 @@ function audit(root, directory, profile, expected, policy) {
         requireValue(parsed.totals.covered === parsed.totals.count, 'Primary line coverage is below 100%');
         for (const metric of METRICS) ratchet(totals[metric], baseline.llvm_totals[metric], target + '/' + metric);
         ratchet(entries, baseline.json_entries, target + '/JSON entries');
+        const instantiationBaseline = baseline.instantiation_profiles;
+        requireValue(instantiationBaseline, 'Missing instantiation-profile baseline');
+        const oldUnit = counter(instantiationBaseline.unit, target + '/unit instantiations baseline');
+        requireValue(unitInstantiations.count >= oldUnit.count,
+          'Unit instantiation denominator requires review: ' + target);
+        ratchet(unitInstantiations, oldUnit, target + '/unit instantiations');
+        for (const [diagnostic, maximum, label] of [
+          [combined, instantiationBaseline.maximum_combined_asymmetric_definition_groups, 'combined'],
+          [integration, instantiationBaseline.maximum_integration_asymmetric_definition_groups, 'integration'],
+        ]) {
+          requireValue(Number.isSafeInteger(maximum) && maximum >= 0
+            && Number.isSafeInteger(diagnostic.asymmetric_definition_groups)
+            && diagnostic.asymmetric_definition_groups >= 0
+            && diagnostic.asymmetric_definition_groups <= maximum,
+          'Compiler-asymmetric definition growth requires review: ' + target + '/' + label);
+        }
         for (const [value, old, label] of [
           [definitions, baseline.source_definitions, 'source definitions'],
           [diagnostics.intended_integration_definitions, baseline.intended_integration_definitions, 'intended integration definitions'],
@@ -425,9 +476,17 @@ function audit(root, directory, profile, expected, policy) {
         }
       }
       diagnostics = {
+        instantiation_policy: diagnostics.instantiation_policy,
         intended_integration_definitions: diagnostics.intended_integration_definitions,
         profiles: diagnostics.profiles.map(p => ({profile: p.profile, llvm_instantiations: p.llvm_instantiations,
-          json_entries: p.json_entries, source_definitions: p.source_definitions})),
+          json_entries: p.json_entries, source_definitions: p.source_definitions,
+          asymmetric_definition_groups: p.asymmetric_definition_groups,
+          source_location_execution_union: {
+            policy_enforced: p.source_location_execution_union.policy_enforced,
+            locations: p.source_location_execution_union.locations,
+            reviewed_unexecuted_locations: p.source_location_execution_union.records
+              .filter(record => !record.executed).length,
+          }})),
       };
     }
     platforms.push({target, lines: parsed.totals, llvm: totals, diagnostics, missed_locations: gaps,
@@ -461,17 +520,28 @@ function render(report) {
     'Nightly instrumentation does not measure every Rust construct, MC/DC, or complete instantiation coverage.',
     'These reports remain separate from stable line gates and Codecov publication.', '',
   ].join('\n');
+  const profileAware = report.profile === 'primary' || report.profile === 'msrv';
+  const header = profileAware
+    ? '| Target | Unique lines | LLVM aggregate lines | Regions | Functions | Raw combined instantiations | Unit instantiations (gate) |'
+    : '| Target | Unique lines | LLVM aggregate lines | Regions | Functions | Instantiations |';
+  const separator = profileAware
+    ? '| --- | ---: | ---: | ---: | ---: | ---: | ---: |'
+    : '| --- | ---: | ---: | ---: | ---: | ---: |';
+  const rows = report.platforms.map(p => {
+    const values = [p.lines, p.llvm.lines, p.llvm.regions, p.llvm.functions, p.llvm.instantiations];
+    if (profileAware) values.push(p.diagnostics.profiles.find(profile => profile.profile === 'unit').llvm_instantiations);
+    return '| ' + p.target + ' | ' + values.map(formatCount).join(' | ') + ' |';
+  });
   return [
     '# Coverage evidence: ' + report.profile, '',
     'SHA: ' + report.sha + '; Rust ' + report.toolchain + '; run ' + report.run + ', attempt ' + report.attempt + '.',
     '', 'Scope: ' + report.scope + '.', '',
-    '| Target | Unique lines | LLVM aggregate lines | Regions | Functions | Instantiations |',
-    '| --- | ---: | ---: | ---: | ---: | ---: |',
-    ...report.platforms.map(p => '| ' + p.target + ' | ' + [p.lines, p.llvm.lines, p.llvm.regions, p.llvm.functions, p.llvm.instantiations].map(formatCount).join(' | ') + ' |'),
+    header, separator, ...rows,
     '', 'Merged unique lines: ' + formatCount(report.merged_unique_lines) + '. ' + report.line_gate + '.',
     '', report.llvm_note + '.',
     '', 'Files without line records are listed in JSON, not silently classified as covered.',
-    'Unit/integration diagnostics and source-definition execution remain separate from complete region execution.',
+    'Unit-profile instantiations are a strict 100% gate; raw combined instantiations remain compiler-sensitive diagnostics.',
+    'Integration-only source-location gaps must be explicitly reviewed and covered by the unit profile.',
     'The region-aware Codecov export is an artifact-only pilot, not the published LCOV score.', '',
   ].join('\n');
 }

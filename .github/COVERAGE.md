@@ -2,7 +2,8 @@
 
 The public headline is measured fs2-turbo library line coverage on the three primary
 native targets with Rust 1.98.1. It is not a claim of complete repository, branch,
-MC/DC, region, or compiler-instantiation coverage.
+MC/DC, or raw combined compiler-instantiation coverage. The unit-only profile has a
+separate strict instantiation gate.
 
 ## Required primary evidence
 
@@ -18,9 +19,14 @@ MC/DC, region, or compiler-instantiation coverage.
 - The reviewed baseline in `coverage-policy.json` records the existing exact-SHA
   report scope and raw metrics. Raw LLVM misses may not increase, and exact coverage
   ratios may not decrease. Inventory or baseline changes require explicit review.
-- Definition groups and the intended integration-definition inventory must remain
-  completely exercised. This does not claim complete execution of each region or
-  compiler-generated instantiation. Raw missing entries remain visible.
+- The nonempty unit-only profile requires 100% of raw LLVM instantiations. Its
+  denominator may not shrink below the reviewed per-target baseline. Combined raw
+  instantiations remain visible compiler-sensitive diagnostics; their misses and
+  compiler-asymmetric definition groups may not grow beyond the reviewed baseline.
+- Combined and unit source-definition and source-location groups must remain fully
+  exercised. Integration-only residuals are accepted only when the exact topology
+  is unit-covered and its source location has a target-specific review annotation.
+  New unowned or unclassified gaps fail closed.
 - Source files without line records are listed explicitly. Test files, cfg-disabled
   modules, and files containing no executable definitions are not labelled covered.
 
