@@ -80,11 +80,11 @@ even when the measured Rust source and reviewed baseline are unchanged.
   baseline. Shell and JavaScript repository scripts are outside that Rust metric.
 - macOS Intel and Linux ARM64 are supplemental measurements, not extensions of the
   existing three-target 100% claim until their exact-SHA results are reviewed.
-- Supplemental jobs run for dev-coverage pushes and CI manual/monthly canary runs.
-  GitHub schedules run from the default branch; no dev-coverage schedule is implied
-  before these changes are approved and promoted there.
-- The manual-only dev-coverage Codecov pilot retains region-aware JSON separately
-  from release line coverage. Its partial-line presentation is not a replacement
+- Supplemental jobs run for `dev` and `1.0.0` pushes and CI manual/monthly canary
+  runs. GitHub schedules run from the default `1.0.0` branch.
+- The manual-only release-head Codecov validation retains region-aware JSON on the
+  isolated logical `coverage-validation` branch, separately from release line
+  coverage. Its partial-line presentation is not a replacement
   for LLVM region totals, branch or MC/DC measurement, or instantiation coverage.
   See the publication rules below for upload and ingestion requirements.
 - Existing broad and focused mutation workflows are retained. Unviable mutations
@@ -100,9 +100,9 @@ Three separate uploads carry primary-linux, primary-windows, and primary-macos f
 The combined and per-platform project checks, plus measured patch checks, require
 100% with zero tolerance. Carryforward is disabled and all three uploads are required.
 Only line reports enter these checks. The strict YAML source remains branch 1.0.0,
-so the staged settings do not take effect there until explicitly approved and merged.
+where the reviewed release settings are enforced.
 
-An explicit manual CI run on dev-coverage may also exercise real Codecov ingestion.
+An explicit manual CI run on `1.0.0` may also exercise real Codecov ingestion.
 This validation-only job requires all primary measurements and the completeness
 gate, rechecks the exact report receipts, and uploads only those three region-aware
 JSON reports using region-pilot-linux, region-pilot-windows, and region-pilot-macos
@@ -112,7 +112,9 @@ requests cannot trigger this upload. It uses the existing GitHub secret without
 changing permissions, branch protections, or the release uploader. Server-side
 processed reports and per-platform totals must be checked separately; an uploader
 exit code alone is not ingestion evidence. The governing YAML still comes from
-1.0.0, so this test does not activate the candidate's release-only status rules.
+1.0.0, while `override_branch: coverage-validation` prevents validation uploads
+from changing the release-head score. No Git branch named `coverage-validation`
+is required.
 
 CI permissions remain contents: read; checkout credentials are not persisted.
 Collectors do not execute artifact content. Missing reports, provenance mismatches,
@@ -200,14 +202,13 @@ Ordinary compatibility lanes retain their existing runner policy.
 
 Focused mutation validation also exercises the legacy/direct byte-counter guards
 and short drive-root validator, and cancels superseded runs to prioritize current
-evidence. Broad mutation testing remains retained. Its weekly schedule is not active
-for `dev-coverage` while the workflow is absent from the default branch; use the
-existing push/manual triggers until a separately approved default-branch promotion.
-No default-branch scheduler, Codecov publication rule, or branch protection changes
-are implied here.
+evidence. Broad mutation testing remains retained. Its weekly schedule runs from
+the default `1.0.0` branch; focused validation runs for relevant release-branch
+pushes and manual dispatches. No Codecov publication rule or branch protection
+change is implied here.
 
-MSRV and nightly coverage run on pushes and pull requests targeting `dev-coverage`,
-`dev`, and `1.0.0`, and on manual dispatches for those branches. Neither workflow
+MSRV and nightly coverage run on pushes and pull requests targeting `dev` and
+`1.0.0`, and on manual dispatches for those branches. Neither workflow
 uses path filters, so documentation-only changes still receive coverage checks.
 The genuine Rust 1.88.0 jobs retain the required `Coverage / <target> / Rust 1.88.0`
 check names; primary Rust 1.98.1 coverage remains separately identified.
@@ -253,16 +254,15 @@ project, per-platform project, and patch checks at 100%, with zero tolerance.
 The six-upload notification threshold complements, but does not replace, the
 collectors' exact platform and provenance checks.
 
-### Policy activation and pilot acceptance
+### Policy validation
 
-`strict_yaml_branch: "1.0.0"` remains intentional: editing candidate YAML does
-not activate release policy. Promote this reviewed configuration through an
-approved release-branch change only after validating the candidate. Do not change
-branch protection or present candidate ingestion as production-policy enforcement.
+`strict_yaml_branch: "1.0.0"` remains intentional: only the protected release
+branch controls production coverage policy. Validation uploads remain isolated and
+must not be presented as production-policy enforcement.
 
-Before promotion, validate workflow and Codecov YAML, publish an approved
-candidate, and manually dispatch CI on `dev-coverage`. Confirm that all six
-expected uploads are merged for that SHA and run attempt. Compare each tooling
+Before changing policy, validate workflow and Codecov YAML and manually dispatch
+CI on `1.0.0`. Confirm that all six expected validation uploads are merged for that
+SHA and run attempt on the logical `coverage-validation` branch. Compare each tooling
 flag with its native LCOV, compare each library flag using its existing format,
 and reject nonzero data outside the corresponding source scope. Zero-total files
 from another platform are not measured coverage. Establish any new required

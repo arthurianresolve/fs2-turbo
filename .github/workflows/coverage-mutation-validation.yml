@@ -2,7 +2,7 @@ name: Coverage mutation validation
 
 on:
   push:
-    branches: [dev-coverage]
+    branches: ["1.0.0"]
     paths:
       - src/**
       - tests/**
@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   focused-mutations:
-    if: github.ref == 'refs/heads/dev-coverage'
+    if: github.ref == 'refs/heads/1.0.0'
     name: ${{ matrix.platform }} focused mutations (Rust ${{ matrix.toolchain }})
     strategy:
       fail-fast: false

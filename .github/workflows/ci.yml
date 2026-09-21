@@ -334,9 +334,9 @@ jobs:
 
 
   codecov_validation:
-    name: Validate dev-coverage region-aware Codecov ingestion
+    name: Validate isolated region-aware Codecov ingestion
     needs: [coverage, coverage_complete, coverage_tooling, tooling_coverage_complete]
-    if: ${{ (github.event_name == 'workflow_dispatch' && github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage') && needs['coverage_tooling'].result == 'success' && needs['tooling_coverage_complete'].result == 'success' }}
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/1.0.0') && needs['coverage_tooling'].result == 'success' && needs['tooling_coverage_complete'].result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -414,10 +414,10 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: region-pilot-linux
-          name: dev-coverage-regions-linux-${{ github.run_id }}-${{ github.run_attempt }}
+          name: coverage-validation-regions-linux-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload validation-only windows region-aware coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -429,10 +429,10 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: region-pilot-windows
-          name: dev-coverage-regions-windows-${{ github.run_id }}-${{ github.run_attempt }}
+          name: coverage-validation-regions-windows-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload validation-only macos region-aware coverage
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
         with:
@@ -444,10 +444,10 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: region-pilot-macos
-          name: dev-coverage-regions-macos-${{ github.run_id }}-${{ github.run_attempt }}
+          name: coverage-validation-regions-macos-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Upload fs2-dev linux line coverage to Codecov
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
@@ -460,7 +460,7 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: tooling-pilot-linux
           name: fs2-dev-linux-${{ github.run_id }}-${{ github.run_attempt }}
@@ -475,7 +475,7 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: tooling-pilot-windows
           name: fs2-dev-windows-${{ github.run_id }}-${{ github.run_attempt }}
@@ -490,7 +490,7 @@ jobs:
           disable_safe_directory: true
           plugins: noop
           fail_ci_if_error: true
-          override_branch: dev-coverage
+          override_branch: coverage-validation
           override_commit: ${{ github.sha }}
           flags: tooling-pilot-macos
           name: fs2-dev-macos-${{ github.run_id }}-${{ github.run_attempt }}
@@ -501,9 +501,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
-      contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+      contains(fromJSON('["refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
       (github.event_name == 'pull_request' &&
-       contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+       contains(fromJSON('["dev","1.0.0"]'), github.base_ref))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -564,9 +564,9 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         github.event_name == 'schedule' ||
-        contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+        contains(fromJSON('["refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
         (github.event_name == 'pull_request' &&
-         contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+         contains(fromJSON('["dev","1.0.0"]'), github.base_ref))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -609,9 +609,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event_name == 'schedule' ||
-      contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+      contains(fromJSON('["refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
       (github.event_name == 'pull_request' &&
-       contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+       contains(fromJSON('["dev","1.0.0"]'), github.base_ref))
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     strategy:
@@ -671,9 +671,9 @@ jobs:
       (
         github.event_name == 'workflow_dispatch' ||
         github.event_name == 'schedule' ||
-        contains(fromJSON('["refs/heads/dev-coverage","refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
+        contains(fromJSON('["refs/heads/dev","refs/heads/1.0.0"]'), github.ref) ||
         (github.event_name == 'pull_request' &&
-         contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref))
+         contains(fromJSON('["dev","1.0.0"]'), github.base_ref))
       )
     runs-on: ubuntu-latest
     timeout-minutes: 10

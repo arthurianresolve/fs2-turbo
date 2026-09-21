@@ -2,7 +2,7 @@ name: Mutation testing
 
 on:
   push:
-    branches: [dev-coverage]
+    branches: ["1.0.0"]
     paths:
       - .github/workflows/mutation-testing.yml
       - .cargo/mutants.toml
