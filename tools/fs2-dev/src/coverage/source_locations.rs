@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use super::{DefinitionGroupState, DefinitionKey, Metric};
 
-const REVIEW_BASELINE: &str = "e59918183b2789ba6986fbfe9df5c607150cb9a8";
+const REVIEW_BASELINE: &str = "ed77262b7f6e2fd7892b82cebd2a12a8987148f1";
 const WINDOWS: &str = "x86_64-pc-windows-msvc";
 const LINUX: &str = "x86_64-unknown-linux-gnu";
 const MACOS: &str = "aarch64-apple-darwin";
@@ -206,12 +206,8 @@ fn reviewed_gap(target: &str, source: &str, line: u64, column: u64) -> Option<Ga
         (LINUX | MACOS, "src/stats/validation.rs", 65, 24) => {
             ("defensive-boundary", "22validate_unix_counters")
         }
-        (LINUX | MACOS, "src/unix/allocation.rs", 90, 1) => {
+        (LINUX | MACOS, "src/unix/allocation.rs", 91, 1) => {
             ("defensive-boundary", "23allocated_size_overflow")
-        }
-        (LINUX, "src/unix/allocation.rs", 85, 22) => ("defensive-boundary", "10i64_to_u64"),
-        (LINUX, "src/unix/stats.rs", 172, 34) => {
-            ("defensive-boundary", "23signed_filesystem_value")
         }
         (LINUX, "src/allocation.rs", 73, 1) | (LINUX, "src/allocation.rs", 77, 40) => (
             "backend-inapplicable",
@@ -221,23 +217,16 @@ fn reviewed_gap(target: &str, source: &str, line: u64, column: u64) -> Option<Ga
             "backend-inapplicable",
             "38extend_file_length_after_snapshot_with",
         ),
-        (WINDOWS, "src/windows/allocation.rs", 58, 67)
-        | (WINDOWS, "src/windows/allocation.rs", 64, 57) => {
-            ("defensive-boundary", "28allocation_state_from_values")
-        }
-        (WINDOWS, "src/windows/allocation.rs", 378, 22) => {
-            ("defensive-boundary", "28requested_range_is_allocated")
-        }
-        (WINDOWS, "src/windows/stats/legacy.rs", 128, 1) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 116, 1) => {
             ("defensive-boundary", "23byte_space_domain_error")
         }
         (WINDOWS, "src/windows/stats/modern.rs", 143, 1) => {
             ("defensive-boundary", "20stats_overflow_error")
         }
-        (WINDOWS, "src/windows/allocation.rs", 332, 55) => {
+        (WINDOWS, "src/windows/allocation.rs", 340, 55) => {
             ("pending-io-candidate", "28overlapped_device_io_control")
         }
-        (WINDOWS, "src/windows/allocation.rs", 360, 1) => {
+        (WINDOWS, "src/windows/allocation.rs", 368, 1) => {
             ("pending-io-candidate", "23wait_for_device_control")
         }
         (WINDOWS, "src/windows/overlapped.rs", 43, 5) => {
@@ -253,24 +242,19 @@ fn reviewed_gap(target: &str, source: &str, line: u64, column: u64) -> Option<Ga
             "legacy-provider-candidate",
             "29legacy_statvfs_after_geometry",
         ),
-        (WINDOWS, "src/windows/stats/legacy.rs", 33, 1)
-        | (WINDOWS, "src/windows/stats/legacy.rs", 36, 12)
-        | (WINDOWS, "src/windows/stats/legacy.rs", 37, 12) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 33, 1) => {
             ("legacy-provider-candidate", "12legacy_space")
         }
-        (WINDOWS, "src/windows/stats/legacy.rs", 41, 1) => {
-            ("legacy-provider-candidate", "17legacy_space_with")
-        }
-        (WINDOWS, "src/windows/stats/legacy.rs", 54, 1) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 42, 1) => {
             ("legacy-provider-candidate", "16cluster_geometry")
         }
-        (WINDOWS, "src/windows/stats/legacy.rs", 73, 1) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 61, 1) => {
             ("legacy-provider-candidate", "23cluster_geometry_result")
         }
-        (WINDOWS, "src/windows/stats/legacy.rs", 87, 1) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 75, 1) => {
             ("legacy-provider-candidate", "10byte_space")
         }
-        (WINDOWS, "src/windows/stats/legacy.rs", 109, 1) => {
+        (WINDOWS, "src/windows/stats/legacy.rs", 97, 1) => {
             ("legacy-provider-candidate", "17byte_space_result")
         }
         _ => return None,
@@ -353,6 +337,35 @@ mod tests {
     }
 
     #[test]
+    fn stale_or_removed_review_locations_are_rejected() {
+        for (target, source, line, column) in [
+            (LINUX, "src/unix/allocation.rs", 90, 1),
+            (MACOS, "src/unix/allocation.rs", 90, 1),
+            (LINUX, "src/unix/allocation.rs", 85, 22),
+            (LINUX, "src/unix/stats.rs", 172, 34),
+            (WINDOWS, "src/windows/allocation.rs", 58, 67),
+            (WINDOWS, "src/windows/allocation.rs", 64, 57),
+            (WINDOWS, "src/windows/allocation.rs", 378, 22),
+            (WINDOWS, "src/windows/allocation.rs", 332, 55),
+            (WINDOWS, "src/windows/allocation.rs", 360, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 128, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 126, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 66, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 80, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 107, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 36, 12),
+            (WINDOWS, "src/windows/stats/legacy.rs", 37, 12),
+            (WINDOWS, "src/windows/stats/legacy.rs", 41, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 54, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 73, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 87, 1),
+            (WINDOWS, "src/windows/stats/legacy.rs", 109, 1),
+        ] {
+            assert!(reviewed_gap(target, source, line, column).is_none());
+        }
+    }
+
+    #[test]
     fn every_reviewed_location_retains_its_target_symbol_and_category() {
         let cases = [
             (
@@ -374,25 +387,9 @@ mod tests {
             (
                 MACOS,
                 "src/unix/allocation.rs",
-                90,
+                91,
                 1,
                 "23allocated_size_overflow",
-                "defensive-boundary",
-            ),
-            (
-                LINUX,
-                "src/unix/allocation.rs",
-                85,
-                22,
-                "10i64_to_u64",
-                "defensive-boundary",
-            ),
-            (
-                LINUX,
-                "src/unix/stats.rs",
-                172,
-                34,
-                "23signed_filesystem_value",
                 "defensive-boundary",
             ),
             (
@@ -421,32 +418,8 @@ mod tests {
             ),
             (
                 WINDOWS,
-                "src/windows/allocation.rs",
-                58,
-                67,
-                "28allocation_state_from_values",
-                "defensive-boundary",
-            ),
-            (
-                WINDOWS,
-                "src/windows/allocation.rs",
-                64,
-                57,
-                "28allocation_state_from_values",
-                "defensive-boundary",
-            ),
-            (
-                WINDOWS,
-                "src/windows/allocation.rs",
-                378,
-                22,
-                "28requested_range_is_allocated",
-                "defensive-boundary",
-            ),
-            (
-                WINDOWS,
                 "src/windows/stats/legacy.rs",
-                128,
+                116,
                 1,
                 "23byte_space_domain_error",
                 "defensive-boundary",
@@ -462,7 +435,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/allocation.rs",
-                332,
+                340,
                 55,
                 "28overlapped_device_io_control",
                 "pending-io-candidate",
@@ -470,7 +443,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/allocation.rs",
-                360,
+                368,
                 1,
                 "23wait_for_device_control",
                 "pending-io-candidate",
@@ -518,31 +491,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/stats/legacy.rs",
-                36,
-                12,
-                "12legacy_space",
-                "legacy-provider-candidate",
-            ),
-            (
-                WINDOWS,
-                "src/windows/stats/legacy.rs",
-                37,
-                12,
-                "12legacy_space",
-                "legacy-provider-candidate",
-            ),
-            (
-                WINDOWS,
-                "src/windows/stats/legacy.rs",
-                41,
-                1,
-                "17legacy_space_with",
-                "legacy-provider-candidate",
-            ),
-            (
-                WINDOWS,
-                "src/windows/stats/legacy.rs",
-                54,
+                42,
                 1,
                 "16cluster_geometry",
                 "legacy-provider-candidate",
@@ -550,7 +499,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/stats/legacy.rs",
-                73,
+                61,
                 1,
                 "23cluster_geometry_result",
                 "legacy-provider-candidate",
@@ -558,7 +507,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/stats/legacy.rs",
-                87,
+                75,
                 1,
                 "10byte_space",
                 "legacy-provider-candidate",
@@ -566,7 +515,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/stats/legacy.rs",
-                109,
+                97,
                 1,
                 "17byte_space_result",
                 "legacy-provider-candidate",
@@ -863,7 +812,7 @@ mod tests {
             (
                 WINDOWS,
                 "src/windows/allocation.rs",
-                360,
+                368,
                 1,
                 "23wait_for_device_control",
                 "pending-io-candidate",
@@ -879,7 +828,7 @@ mod tests {
             (
                 MACOS,
                 "src/unix/allocation.rs",
-                90,
+                91,
                 1,
                 "23allocated_size_overflow",
                 "defensive-boundary",
@@ -900,7 +849,7 @@ mod tests {
             );
         }
         assert!(reviewed_gap(MACOS, "src/allocation.rs", 73, 1).is_none());
-        assert!(reviewed_gap(LINUX, "src/windows/allocation.rs", 360, 1).is_none());
+        assert!(reviewed_gap(LINUX, "src/windows/allocation.rs", 368, 1).is_none());
     }
 
     #[test]

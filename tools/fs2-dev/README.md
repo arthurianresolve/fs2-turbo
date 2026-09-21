@@ -15,8 +15,14 @@ Native jobs retain isolated combined, unit, and integration profiles, existing
 coverage gates, and Codecov publication policy. They record exact source/tree,
 native target, compiler/LLVM, tool, run, and environment identities and verify
 SHA-256 manifests of tracked source. Reports and available failure diagnostics are
-retained for 14 days; failed jobs are not eligible Codecov uploads. Experimental
-nightly branch coverage and MC/DC runners are not part of this tooling.
+retained for 14 days; failed jobs are not eligible Codecov uploads. The separate
+pinned-nightly branch-coverage workflow and MC/DC tooling are not implemented by
+the `fs2-dev coverage` subcommand.
+
+`cargo xtask coverage` performs structural and policy validation of selected
+JSON and LCOV files; it does not authenticate their origin by itself.
+Authoritative CI acceptance additionally requires the sealed collector's exact
+SHA, tree, target, toolchain, run, attempt, source-manifest, and digest checks.
 
 ## Native coverage reproducibility
 
@@ -58,7 +64,7 @@ inferred from the supplemental union. `null` ownership means there is no
 uncovered topology or no unit profile for comparison; it is not a passing check.
 
 Integration gap annotations record their review baseline,
-`e59918183b2789ba6986fbfe9df5c607150cb9a8`. An annotation requires the reviewed
+`ed77262b7f6e2fd7892b82cebd2a12a8987148f1`. An annotation requires the reviewed
 target, filename, line, column, matching owner-symbol fragments for every member,
 and unit ownership of every uncovered topology. Unmatched gaps stay
 unclassified. These are historical review hints, not current reachability

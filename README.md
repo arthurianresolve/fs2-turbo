@@ -9,7 +9,7 @@
 [![Release gates](https://img.shields.io/github/actions/workflow/status/arthurianresolve/fs2-turbo/release-gates.yml?branch=1.0.0&label=Release%20gates)](https://github.com/arthurianresolve/fs2-turbo/actions/workflows/release-gates.yml?query=branch%3A1.0.0)
 [![CI](https://img.shields.io/github/actions/workflow/status/arthurianresolve/fs2-turbo/ci.yml?branch=1.0.0&label=CI)](https://github.com/arthurianresolve/fs2-turbo/actions/workflows/ci.yml?query=branch%3A1.0.0)
 [![codecov](https://codecov.io/gh/arthurianresolve/fs2-turbo/graph/badge.svg?token=AZ4ICM31DS)](https://codecov.io/gh/arthurianresolve/fs2-turbo)
-[![Build status](https://ci.appveyor.com/api/projects/status/wcbum0srhq3awhpe?svg=true)](https://ci.appveyor.com/project/arthurianresolve/fs2-turbo)
+[![Build status](https://ci.appveyor.com/api/projects/status/github/arthurianresolve/fs2-turbo?branch=1.0.0&svg=true)](https://ci.appveyor.com/project/arthurianresolve/fs2-turbo)
 [![Rust:_1.98.1](https://img.shields.io/badge/Rust%201.98.1-black?logo=rust)](#rust-version)
 [![Rust_Edition:2024](https://img.shields.io/badge/Rust-Edition%202024-orange?logo=rust)](#rust-edition)
 [![MSRV: Rust 1.88.0](https://img.shields.io/badge/MSRV-1.88.0-blue?logo=rust)](#platforms-and-validation)
@@ -38,7 +38,7 @@ filesystem requirements:
 - **Correctness and security hardening:** validated filesystem counters, safer
   failure handling, and explicit contracts around locking, allocation, and inheritance.
 - **Targeted performance improvements:** lower latency for selected allocation
-  and filesystem queries including the historical Windows comparisons below. Overall churn reduction and no performance regressions (1% tollerance)
+  and filesystem queries in the scoped historical Windows comparisons below.
 
 [PR #1][evolution] traces the evolution from fs2 v0.4.3 to fs2-turbo v1.0.0,
 including implementation owners, per-API forwarding, OS-specific commits, and

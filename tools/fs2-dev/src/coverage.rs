@@ -322,16 +322,47 @@ struct CoverageInputs {
     physical_lines: PhysicalLines,
 }
 
+const MAX_COVERAGE_INPUT_BYTES: u64 = 64 * 1024 * 1024;
+
+fn read_coverage_text(path: &Path) -> Result<String> {
+    read_coverage_text_with_limit(path, MAX_COVERAGE_INPUT_BYTES)
+}
+
+fn validate_coverage_input(path: &Path, is_file: bool, length: u64, limit: u64) -> Result<()> {
+    if !is_file {
+        return Err(invalid_data(format!(
+            "coverage input is not a regular file: {}",
+            path.display()
+        )));
+    }
+    if length > limit {
+        return Err(invalid_data(format!(
+            "coverage input exceeds the {limit}-byte limit: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn read_coverage_text_with_limit(path: &Path, limit: u64) -> Result<String> {
+    let file = std::fs::File::open(path)?;
+    let metadata = file.metadata()?;
+    validate_coverage_input(path, metadata.is_file(), metadata.len(), limit)?;
+
+    let mut contents = String::new();
+    let mut bounded = std::io::Read::take(file, limit.saturating_add(1));
+    std::io::Read::read_to_string(&mut bounded, &mut contents)?;
+    let content_length = u64::try_from(contents.len()).unwrap_or(u64::MAX);
+    validate_coverage_input(path, true, content_length, limit)?;
+    Ok(contents)
+}
+
 fn read_coverage_export(path: &Path) -> Result<CoverageExport> {
-    fs::read_to_string(path)
-        .map_err(Into::into)
-        .and_then(|contents| parse_json(&contents))
+    read_coverage_text(path).and_then(|contents| parse_json(&contents))
 }
 
 fn read_physical_lines(path: &Path) -> Result<PhysicalLines> {
-    fs::read_to_string(path)
-        .map_err(Into::into)
-        .and_then(|contents| parse_lcov(&contents))
+    read_coverage_text(path).and_then(|contents| parse_lcov(&contents))
 }
 
 fn load_coverage_inputs(
@@ -1287,6 +1318,22 @@ mod tests {
             let error = single_data(&export, "unit").unwrap_err().to_string();
             assert!(error.contains("unit coverage JSON must contain exactly one data set"));
         }
+    }
+
+    #[test]
+    fn coverage_inputs_must_be_regular_and_bounded() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("coverage.json");
+        fs::write(&path, "1234").unwrap();
+        assert_eq!(read_coverage_text_with_limit(&path, 4).unwrap(), "1234");
+        let error = read_coverage_text_with_limit(&path, 3)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("exceeds the 3-byte limit"));
+        let error = validate_coverage_input(directory.path(), false, 0, 4)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("is not a regular file"));
     }
 
     #[test]

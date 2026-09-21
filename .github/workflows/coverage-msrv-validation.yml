@@ -2,9 +2,9 @@ name: MSRV coverage evidence
 
 "on":
   push:
-    branches: [dev-coverage, dev, "1.0.0"]
+    branches: [dev, "1.0.0"]
   pull_request:
-    branches: [dev-coverage, dev, "1.0.0"]
+    branches: [dev, "1.0.0"]
   workflow_dispatch:
 
 permissions:
@@ -20,13 +20,14 @@ jobs:
     if: >-
       github.repository == 'arthurianresolve/fs2-turbo' &&
       (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
-      contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref || github.ref_name)
+      contains(fromJSON('["dev","1.0.0"]'), github.base_ref || github.ref_name)
     timeout-minutes: 25
     runs-on: ${{ matrix.os }}
     env:
       RUSTUP_TOOLCHAIN: "1.88.0"
       COVERAGE_TOOLCHAIN: "1.88.0"
       COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
       CARGO_INCREMENTAL: "0"
       CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-combined-${{ matrix.target }}
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
@@ -118,7 +119,7 @@ jobs:
       always() &&
       github.repository == 'arthurianresolve/fs2-turbo' &&
       (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
-      contains(fromJSON('["dev-coverage","dev","1.0.0"]'), github.base_ref || github.ref_name)
+      contains(fromJSON('["dev","1.0.0"]'), github.base_ref || github.ref_name)
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:

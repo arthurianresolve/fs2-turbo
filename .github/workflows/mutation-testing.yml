@@ -2,7 +2,7 @@ name: Mutation testing
 
 on:
   push:
-    branches: [dev-coverage]
+    branches: ["1.0.0"]
     paths:
       - .github/workflows/mutation-testing.yml
       - .cargo/mutants.toml
@@ -68,7 +68,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: mutation-report-${{ matrix.platform }}-${{ github.sha }}
+          name: mutation-report-${{ matrix.platform }}-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/mutants.out
           if-no-files-found: error
           retention-days: 14
