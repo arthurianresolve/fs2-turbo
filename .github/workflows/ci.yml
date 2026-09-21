@@ -17,6 +17,7 @@ concurrency:
 jobs:
   support-matrix:
     name: Validate support matrix
+    timeout-minutes: 10
     outputs:
       rust_version: ${{ steps.matrix.outputs.rust_version }}
     runs-on: ubuntu-latest
@@ -31,15 +32,13 @@ jobs:
       - id: matrix
         run: cargo xtask matrix --github-output "$GITHUB_OUTPUT"
       - name: Test coverage evidence integrity and merge policy
-        run: node --test .github/scripts/coverage-audit.test.cjs .github/scripts/coverage-relocate.test.cjs
-      - name: Fetch locked compatibility dependencies for offline tests
-        run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
-      - run: cargo test --package fs2-dev --locked
+        run: node --test .github/scripts/coverage-audit.test.cjs .github/scripts/coverage-relocate.test.cjs .github/scripts/codecov-handoff.test.cjs
 
   check:
     needs: support-matrix
     name: ${{ matrix.os }} / Rust ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -62,19 +61,52 @@ jobs:
           toolchain: ${{ matrix.toolchain }}
           components: rustfmt, clippy
           targets: ${{ matrix.target }}
-      - run: cargo fmt --all -- --check
+      - run: cargo fmt --package fs2-turbo -- --check
       - run: cargo clippy --package fs2-turbo --all-targets --target "${{ matrix.target }}" --locked -- -D warnings
       - run: cargo test --package fs2-turbo --target "${{ matrix.target }}" --locked
       - name: Fetch locked compatibility dependencies for offline tests
+        if: matrix.toolchain == needs.support-matrix.outputs.rust_version
         run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
-      - run: cargo test --package fs2-dev --target "${{ matrix.target }}" --locked
       - if: matrix.toolchain == needs.support-matrix.outputs.rust_version
         run: cargo xtask compatibility
+
+  tooling_check:
+    name: fs2-dev / ${{ matrix.os }} / Rust ${{ matrix.toolchain }}
+    needs: support-matrix
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, toolchain: "1.88.0" }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu, toolchain: stable }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, toolchain: "1.88.0" }
+          - { os: macos-15-intel, target: x86_64-apple-darwin, toolchain: stable }
+          - { os: macos-latest, target: aarch64-apple-darwin, toolchain: "1.88.0" }
+          - { os: macos-latest, target: aarch64-apple-darwin, toolchain: stable }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, toolchain: "1.88.0" }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, toolchain: stable }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          components: rustfmt, clippy
+          targets: ${{ matrix.target }}
+      - run: cargo fmt --package fs2-dev -- --check
+      - run: cargo clippy --package fs2-dev --all-targets --target "${{ matrix.target }}" --locked -- -D warnings
+      - name: Fetch locked compatibility dependencies for offline tests
+        run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
+      - run: cargo test --package fs2-dev --target "${{ matrix.target }}" --locked
 
   cross_check:
     needs: support-matrix
     name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -106,6 +138,7 @@ jobs:
     needs: support-matrix
     name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -141,6 +174,7 @@ jobs:
     needs: support-matrix
     name: ${{ matrix.target }} / Rust ${{ matrix.toolchain }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -165,6 +199,7 @@ jobs:
       RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
       COVERAGE_TOOLCHAIN: ${{ matrix.toolchain }}
       COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
       CARGO_INCREMENTAL: "0"
       CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-combined-${{ matrix.target }}
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
@@ -229,7 +264,7 @@ jobs:
         shell: bash
         run: bash .github/scripts/coverage-provenance.sh verify "coverage-${{ matrix.target }}"
       - name: Test coverage collector on this native OS
-        run: node --test .github/scripts/coverage-audit.test.cjs .github/scripts/coverage-relocate.test.cjs
+        run: node --test .github/scripts/coverage-audit.test.cjs .github/scripts/coverage-relocate.test.cjs .github/scripts/codecov-handoff.test.cjs
       - name: Seal complete primary evidence
         run: node .github/scripts/coverage-audit.cjs seal primary "${{ matrix.target }}"
       - name: Retain coverage evidence and failure diagnostics
@@ -256,13 +291,17 @@ jobs:
 
   coverage_complete:
     name: Complete primary coverage evidence
-    needs: coverage
+    needs: [coverage, tooling_check]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      COVERAGE_JOB_RESULT: ${{ needs.coverage.result }}
+      COVERAGE_JOB_RESULT: ${{ needs.coverage.result == 'success' && needs.tooling_check.result == 'success' && 'success' || 'failure' }}
     steps:
+      - name: Require fs2-dev checks before accepting library evidence
+        env:
+          TOOLING_JOB_RESULT: ${{ needs.tooling_check.result }}
+        run: node -e 'if (process.env.TOOLING_JOB_RESULT !== "success") { throw new Error("fs2-dev checks did not pass"); }'
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -296,8 +335,8 @@ jobs:
 
   codecov_validation:
     name: Validate dev-coverage region-aware Codecov ingestion
-    needs: [coverage, coverage_complete]
-    if: github.event_name == 'workflow_dispatch' && github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage'
+    needs: [coverage, coverage_complete, coverage_tooling, tooling_coverage_complete]
+    if: ${{ (github.event_name == 'workflow_dispatch' && github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/dev-coverage') && needs['coverage_tooling'].result == 'success' && needs['tooling_coverage_complete'].result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -325,6 +364,34 @@ jobs:
         with:
           name: coverage-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
           path: coverage/coverage-aarch64-apple-darwin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-x86_64-unknown-linux-gnu-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-x86_64-unknown-linux-gnu
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-x86_64-pc-windows-msvc-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-x86_64-pc-windows-msvc
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-aarch64-apple-darwin
+      - name: Revalidate fs2-dev coverage for Codecov
+        env:
+          COVERAGE_JOB_RESULT: ${{ needs['coverage_tooling'].result }}
+        if: ${{ !cancelled() }}
+        id: audit_tooling
+        run: node .github/scripts/coverage-audit.cjs collect tooling coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && steps.audit_tooling.outputs.report_directory != '' }}
+        with:
+          name: codecov-tooling-pilot-summary-attempt-${{ github.run_attempt }}
+          path: ${{ steps.audit_tooling.outputs.report_directory }}
+          if-no-files-found: error
+          retention-days: 14
       - name: Recheck validation uploads against their exact source and attempt
         if: ${{ !cancelled() }}
         id: audit
@@ -382,6 +449,52 @@ jobs:
           flags: region-pilot-macos
           name: dev-coverage-regions-macos-${{ github.run_id }}-${{ github.run_attempt }}
 
+      - name: Upload fs2-dev linux line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-x86_64-unknown-linux-gnu/coverage-tooling-x86_64-unknown-linux-gnu.lcov
+          disable_search: true
+          disable_file_fixes: true
+          disable_safe_directory: true
+          plugins: noop
+          fail_ci_if_error: true
+          override_branch: dev-coverage
+          override_commit: ${{ github.sha }}
+          flags: tooling-pilot-linux
+          name: fs2-dev-linux-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload fs2-dev windows line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-x86_64-pc-windows-msvc/coverage-tooling-x86_64-pc-windows-msvc.lcov
+          disable_search: true
+          disable_file_fixes: true
+          disable_safe_directory: true
+          plugins: noop
+          fail_ci_if_error: true
+          override_branch: dev-coverage
+          override_commit: ${{ github.sha }}
+          flags: tooling-pilot-windows
+          name: fs2-dev-windows-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload fs2-dev macos line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-aarch64-apple-darwin/coverage-tooling-aarch64-apple-darwin.lcov
+          disable_search: true
+          disable_file_fixes: true
+          disable_safe_directory: true
+          plugins: noop
+          fail_ci_if_error: true
+          override_branch: dev-coverage
+          override_commit: ${{ github.sha }}
+          flags: tooling-pilot-macos
+          name: fs2-dev-macos-${{ github.run_id }}-${{ github.run_attempt }}
+
   coverage_tooling:
     name: Tooling coverage / ${{ matrix.target }}
     needs: support-matrix
@@ -404,6 +517,7 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.98.1"
       COVERAGE_TOOLCHAIN: "1.98.1"
       COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
       CARGO_INCREMENTAL: "0"
       CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-tooling-${{ matrix.target }}
     steps:
@@ -510,6 +624,7 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.98.1"
       COVERAGE_TOOLCHAIN: "1.98.1"
       COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
       CARGO_INCREMENTAL: "0"
       CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-extended-${{ matrix.target }}
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
@@ -592,11 +707,8 @@ jobs:
 
   codecov:
     name: Publish release coverage
-    needs: [coverage, coverage_complete]
-    if: >-
-      github.repository == 'arthurianresolve/fs2-turbo' &&
-      github.ref == 'refs/heads/1.0.0' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+    needs: [coverage, coverage_complete, coverage_tooling, tooling_coverage_complete]
+    if: ${{ (github.repository == 'arthurianresolve/fs2-turbo' && github.ref == 'refs/heads/1.0.0' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')) && needs['coverage_tooling'].result == 'success' && needs['tooling_coverage_complete'].result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -618,6 +730,34 @@ jobs:
         with:
           name: coverage-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
           path: coverage/coverage-aarch64-apple-darwin
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-x86_64-unknown-linux-gnu-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-x86_64-unknown-linux-gnu
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-x86_64-pc-windows-msvc-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-x86_64-pc-windows-msvc
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-tooling-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
+          path: coverage/coverage-tooling-aarch64-apple-darwin
+      - name: Revalidate fs2-dev coverage for Codecov
+        if: ${{ !cancelled() }}
+        id: publication_audit_tooling
+        env:
+          COVERAGE_JOB_RESULT: ${{ needs['coverage_tooling'].result }}
+        run: node .github/scripts/coverage-audit.cjs collect tooling coverage
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && steps.publication_audit_tooling.outputs.report_directory != '' }}
+        with:
+          name: codecov-tooling-summary-attempt-${{ github.run_attempt }}
+          path: ${{ steps.publication_audit_tooling.outputs.report_directory }}
+          if-no-files-found: error
+          retention-days: 14
       - name: Recheck the exact artifacts selected for publication
         if: ${{ !cancelled() }}
         id: publication_audit
@@ -681,3 +821,37 @@ jobs:
           fail_ci_if_error: true
           flags: primary-macos
           name: release-1.0.0-macos
+      - name: Upload fs2-dev linux line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-x86_64-unknown-linux-gnu/coverage-tooling-x86_64-unknown-linux-gnu.lcov
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          flags: tooling-linux
+          name: fs2-dev-linux-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload fs2-dev windows line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-x86_64-pc-windows-msvc/coverage-tooling-x86_64-pc-windows-msvc.lcov
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          flags: tooling-windows
+          name: fs2-dev-windows-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Upload fs2-dev macos line coverage to Codecov
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          version: v11.3.1
+          files: coverage/coverage-tooling-aarch64-apple-darwin/coverage-tooling-aarch64-apple-darwin.lcov
+          disable_search: true
+          plugins: noop
+          fail_ci_if_error: true
+          flags: tooling-macos
+          name: fs2-dev-macos-${{ github.run_id }}-${{ github.run_attempt }}

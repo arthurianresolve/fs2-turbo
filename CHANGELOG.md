@@ -2,13 +2,13 @@
 
 All notable changes to this project are documented in this file.
 
-## 1.0.0 - 2026-09-03
+## 1.0.0 - Unreleased
 
 ### Compatibility
 
 - Preserves the fs2 0.4 `FileExt` method names, signatures, locking behavior,
   allocation behavior, error mapping, and handle ownership semantics.
-- Retains collision-safe `fs2_*` forwarding methods for Rust 1.97 and newer.
+- Retains collision-safe `fs2_*` forwarding methods for Rust 1.89 and newer.
 - Compiles the frozen v0.4 consumer and the current API across Rust editions
   2015, 2018, 2021, and 2024.
 

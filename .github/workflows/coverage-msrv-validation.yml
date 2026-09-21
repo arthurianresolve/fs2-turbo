@@ -27,6 +27,7 @@ jobs:
       RUSTUP_TOOLCHAIN: "1.88.0"
       COVERAGE_TOOLCHAIN: "1.88.0"
       COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
       CARGO_INCREMENTAL: "0"
       CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-combined-${{ matrix.target }}
       FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"

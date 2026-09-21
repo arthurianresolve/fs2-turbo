@@ -26,6 +26,7 @@ use containment::ProcessContainment;
 
 const DEFAULT_PROCESS_TIMEOUT: Duration = Duration::from_secs(3_600);
 const MAX_PROCESS_TIMEOUT_SECONDS: u64 = 86_400;
+const MAX_CAPTURED_STREAM_BYTES: u64 = 16 * 1024 * 1024;
 const TERMINATION_REAP_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(unix)]
 const PROCESS_GROUP_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -227,6 +228,8 @@ fn capture_with_backend(
             .stdout(Stdio::from(stdout_capture))
             .stderr(Stdio::from(stderr_capture));
         let execution = execute(command, timeout()?);
+        validate_capture_file(&stdout_file, "stdout", MAX_CAPTURED_STREAM_BYTES)?;
+        validate_capture_file(&stderr_file, "stderr", MAX_CAPTURED_STREAM_BYTES)?;
         backend.rewind(&mut stdout_file)?;
         backend.rewind(&mut stderr_file)?;
         let mut stdout = Vec::new();
@@ -239,6 +242,19 @@ fn capture_with_backend(
     // Release those copies before the files and private directory are dropped.
     command.stdout(Stdio::null()).stderr(Stdio::null());
     result
+}
+
+fn validate_capture_file(file: &File, stream: &str, limit: u64) -> Result<()> {
+    validate_capture_length(stream, file.metadata()?.len(), limit)
+}
+
+fn validate_capture_length(stream: &str, length: u64, limit: u64) -> Result<()> {
+    if length > limit {
+        return Err(invalid_data(format!(
+            "captured {stream} exceeded the {limit}-byte diagnostic limit"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(any(windows, test, coverage))]
@@ -299,10 +315,28 @@ fn captured_output(
         Err(invalid_data(format!(
             "{label} failed: {}\nstdout:\n{}\nstderr:\n{}",
             execution.outcome.description(),
-            String::from_utf8_lossy(&stdout).trim(),
-            String::from_utf8_lossy(&stderr).trim()
+            render_diagnostic_stream(&stdout),
+            render_diagnostic_stream(&stderr)
         )))
     }
+}
+
+fn render_diagnostic_stream(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim()
+        .split('\n')
+        .map(|line| {
+            let mut rendered = line
+                .chars()
+                .flat_map(char::escape_default)
+                .collect::<String>();
+            if rendered.starts_with("::") {
+                rendered.insert_str(0, "| ");
+            }
+            rendered
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn toolchain_key() -> Result<String> {
@@ -1705,7 +1739,20 @@ mod tests {
         .to_string();
         assert!(error.contains("fixture failed: native exit 7"));
         assert!(error.contains("stdout:\noutput"));
-        assert!(error.contains("stderr:\n\u{fffd}"));
+        assert!(error.contains("stderr:\n\\u{fffd}"));
+    }
+
+    #[test]
+    fn diagnostic_capture_is_bounded_and_console_safe() {
+        validate_capture_length("stdout", 4, 4).unwrap();
+        let error = validate_capture_length("stderr", 5, 4)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("captured stderr exceeded the 4-byte diagnostic limit"));
+        assert_eq!(
+            render_diagnostic_stream(b"\x1b[31mred\r\n::warning::fixture"),
+            "\\u{1b}[31mred\\r\n| ::warning::fixture"
+        );
     }
 
     #[test]

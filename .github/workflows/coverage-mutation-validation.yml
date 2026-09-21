@@ -80,9 +80,6 @@ jobs:
           rustc -vV
           cargo-mutants mutants --version
 
-      - name: Test coverage policy regressions
-        run: cargo test --locked --package fs2-dev coverage::tests
-
       - name: Bind the equivalent Windows mutation exception to its proof
         if: matrix.platform == 'Windows'
         run: node .github/scripts/coverage-mutation-summary.cjs --check-equivalence
@@ -107,7 +104,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: coverage-mutations-${{ matrix.platform }}-${{ matrix.toolchain }}-${{ github.sha }}
+          name: coverage-mutations-${{ matrix.platform }}-${{ matrix.toolchain }}-${{ github.sha }}-attempt-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/mutants.out
             ${{ runner.temp }}/focused-mutation-summary.json
