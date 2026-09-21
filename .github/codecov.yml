@@ -1,10 +1,11 @@
 codecov:
   branch: "1.0.0"
+  # This candidate policy becomes authoritative only after reviewed promotion.
   strict_yaml_branch: "1.0.0"
   require_ci_to_pass: true
   notify:
-    # One upload contains all three native coverage reports from the same run.
-    after_n_builds: 1
+    # Three library and three tooling uploads; CI also checks each identity.
+    after_n_builds: 6
     wait_for_ci: true
 
 coverage:
@@ -13,20 +14,140 @@ coverage:
   status:
     project:
       default:
-        target: auto
+        target: 100%
         threshold: 0
+        flags: [primary-linux, primary-windows, primary-macos]
         if_not_found: failure
         if_ci_failed: error
         branches:
           - "1.0.0"
+      linux:
+        target: 100%
+        threshold: 0
+        flags: [primary-linux]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      windows:
+        target: 100%
+        threshold: 0
+        flags: [primary-windows]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      macos:
+        target: 100%
+        threshold: 0
+        flags: [primary-macos]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      tooling:
+        target: 100%
+        threshold: 0
+        flags: [tooling-linux, tooling-windows, tooling-macos]
+        paths: ["tools/fs2-dev/src/**"]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      tooling-linux:
+        target: 100%
+        threshold: 0
+        flags: [tooling-linux]
+        paths: ["tools/fs2-dev/src/**"]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      tooling-windows:
+        target: 100%
+        threshold: 0
+        flags: [tooling-windows]
+        paths: ["tools/fs2-dev/src/**"]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+      tooling-macos:
+        target: 100%
+        threshold: 0
+        flags: [tooling-macos]
+        paths: ["tools/fs2-dev/src/**"]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
     patch:
       default:
-        target: auto
+        target: 100%
         threshold: 0
+        flags: [primary-linux, primary-windows, primary-macos]
         if_not_found: failure
         if_ci_failed: error
         branches:
           - "1.0.0"
+
+      tooling:
+        target: 100%
+        threshold: 0
+        flags: [tooling-linux, tooling-windows, tooling-macos]
+        paths: ["tools/fs2-dev/src/**"]
+        if_not_found: failure
+        if_ci_failed: error
+        branches: ["1.0.0"]
+
+flags:
+  primary-linux:
+    paths: ["src/**"]
+    carryforward: false
+  primary-windows:
+    paths: ["src/**"]
+    carryforward: false
+  primary-macos:
+    paths: ["src/**"]
+    carryforward: false
+  tooling-linux:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+  tooling-windows:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+  tooling-macos:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+  region-pilot-linux:
+    paths: ["src/**"]
+    carryforward: false
+  region-pilot-windows:
+    paths: ["src/**"]
+    carryforward: false
+  region-pilot-macos:
+    paths: ["src/**"]
+    carryforward: false
+  tooling-pilot-linux:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+  tooling-pilot-windows:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+  tooling-pilot-macos:
+    paths: ["tools/fs2-dev/src/**"]
+    carryforward: false
+
+component_management:
+  # Flags own the checks; components add views without duplicate statuses.
+  default_rules:
+    statuses: []
+  individual_components:
+    - component_id: fs2-library
+      name: fs2 library
+      paths: ["src/**"]
+      flag_regexes: ["^(primary|region-pilot)-(linux|windows|macos)$"]
+    - component_id: fs2-dev
+      name: fs2-dev tooling
+      paths: ["tools/fs2-dev/src/**"]
+      flag_regexes: ["^tooling(-pilot)?-(linux|windows|macos)$"]
+
+parsers:
+  lcov:
+    partials_as_hits: false
 
 # Publication is release-branch-only; do not post incomplete PR commentary.
 comment: false

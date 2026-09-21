@@ -1,0 +1,112 @@
+name: Coverage mutation validation
+
+on:
+  push:
+    branches: [dev-coverage]
+    paths:
+      - src/**
+      - tests/**
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - rust-toolchain.toml
+      - .cargo/**
+      - tools/fs2-dev/**
+      - .github/scripts/coverage-mutation-summary.cjs
+      - .github/workflows/coverage-mutation-validation.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-mutation-validation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  focused-mutations:
+    if: github.ref == 'refs/heads/dev-coverage'
+    name: ${{ matrix.platform }} focused mutations (Rust ${{ matrix.toolchain }})
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.88.0", "1.98.1"]
+        platform: [Linux, Windows, macOS]
+        include:
+          - platform: Linux
+            os: ubuntu-24.04
+            scope: '\b(blocks_to_bytes|allocated_size_overflow|i64_to_u64|validate_unix_counters|signed_filesystem_value)\b'
+            exclude: '^$'
+          - platform: Windows
+            os: windows-2025
+            scope: '\b(io_error_from_hresult|hresult_from_win32|modern_statvfs_unavailable|space_after_exact_root|exact_root_value|is_volume_resolution_error|checked_disk_space|counters_from_disk_space_information|byte_space_result|direct_space_result|appears_to_be_drive_root)\b'
+            # The low 16-bit error and 0x8007_0000 have disjoint bits: OR equals XOR.
+            # The preflight binds this exception to the exact expression and location.
+            exclude: '^src/windows/stats/modern\.rs:101:23: replace \| with \^ in hresult_from_win32$'
+          - platform: macOS
+            os: macos-14
+            scope: '\b(blocks_to_bytes|allocated_size_overflow|validate_unix_counters)\b'
+            exclude: '^$'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.toolchain }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_BUILD_JOBS: "2"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      RUST_TEST_THREADS: "1"
+      MUTATION_SCOPE: ${{ matrix.scope }}
+      MUTATION_EXCLUSION: ${{ matrix.exclude }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: ${{ matrix.toolchain }}
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-mutants@27.1.0
+          fallback: none
+
+      - name: Record tool identity
+        run: |
+          rustc -vV
+          cargo-mutants mutants --version
+
+      - name: Bind the equivalent Windows mutation exception to its proof
+        if: matrix.platform == 'Windows'
+        run: node .github/scripts/coverage-mutation-summary.cjs --check-equivalence
+
+      - name: Run focused mutation tests with an unmodified baseline
+        run: >-
+          cargo-mutants mutants --no-config --package fs2-turbo --in-place
+          --output "${{ runner.temp }}" --baseline run
+          --timeout 60 --build-timeout 300 --re '${{ matrix.scope }}'
+          --exclude-re '${{ matrix.exclude }}'
+          -C --locked --annotations github --no-times
+
+      - name: Require complete evidence and report outcomes separately
+        if: always()
+        run: node .github/scripts/coverage-mutation-summary.cjs
+
+      - name: Verify tracked files were restored
+        if: always()
+        run: git diff --exit-code -- .
+
+      - name: Upload mutation evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-mutations-${{ matrix.platform }}-${{ matrix.toolchain }}-${{ github.sha }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/mutants.out
+            ${{ runner.temp }}/focused-mutation-summary.json
+          if-no-files-found: error
+          retention-days: 14

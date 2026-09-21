@@ -7,10 +7,17 @@ pub(crate) fn duplicate(file: &File) -> Result<File> {
         // SAFETY: `file` owns a valid descriptor for the duration of this call.
         libc::dup(file.as_raw_fd())
     };
+    // SAFETY: a successful dup transfers ownership of a new descriptor.
+    unsafe { duplicate_result(fd) }
+}
+
+/// A nonnegative descriptor must be valid and transfer exclusive ownership.
+#[inline]
+unsafe fn duplicate_result(fd: libc::c_int) -> Result<File> {
     if fd < 0 {
         Err(Error::last_os_error())
     } else {
-        // SAFETY: a successful `dup` returns a new descriptor owned by the caller.
+        // SAFETY: the caller transfers ownership of this valid descriptor.
         Ok(unsafe { File::from_raw_fd(fd) })
     }
 }
@@ -77,5 +84,14 @@ mod tests {
         };
         assert_ne!(flags, -1);
         assert_eq!(flags & libc::FD_CLOEXEC, 0);
+    }
+
+    #[test]
+    fn duplicate_failure_preserves_errno_without_taking_ownership() {
+        // SAFETY: close(-1) cannot close an owned descriptor and sets errno to EBADF.
+        assert_eq!(unsafe { libc::close(-1) }, -1);
+        // SAFETY: a negative result carries no descriptor ownership.
+        let error = unsafe { super::duplicate_result(-1) }.unwrap_err();
+        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
     }
 }

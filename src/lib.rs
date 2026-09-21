@@ -82,8 +82,8 @@ pub(crate) use allocation::AllocationState;
 ///     permissions.
 ///   * File locks may only be relied upon to be advisory.
 ///
-/// See the tests in `tests/lib_integration.rs` for cross-platform lock behavior that may be
-/// relied upon; see the tests in `unix` and `windows` for examples of
+/// See the tests in `tests/integration/lib_integration.rs` for cross-platform lock behavior
+/// that may be relied upon; see the tests in `unix` and `windows` for examples of
 /// platform-specific behavior. File locks are implemented with
 /// [`flock(2)`](http://man7.org/linux/man-pages/man2/flock.2.html) on Unix and
 /// [`LockFileEx`](https://learn.microsoft.com/windows/win32/api/fileapi/nf-fileapi-lockfileex)
@@ -247,4 +247,158 @@ impl FileExt for File {
 /// return.
 pub fn lock_contended_error() -> Error {
     sys::lock_error()
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::{
+        FileExt, allocation_granularity, available_space, free_space, lock_contended_error,
+        statvfs, total_space,
+    };
+    use std::fs::{File, OpenOptions};
+    use std::io::Result;
+
+    struct DefaultForwarders<'a>(&'a File);
+
+    #[allow(deprecated)]
+    impl FileExt for DefaultForwarders<'_> {
+        fn duplicate(&self) -> Result<File> {
+            FileExt::duplicate(self.0)
+        }
+
+        fn allocated_size(&self) -> Result<u64> {
+            FileExt::allocated_size(self.0)
+        }
+
+        fn allocate(&self, len: u64) -> Result<()> {
+            FileExt::allocate(self.0, len)
+        }
+
+        fn lock_shared(&self) -> Result<()> {
+            FileExt::lock_shared(self.0)
+        }
+
+        fn lock_exclusive(&self) -> Result<()> {
+            FileExt::lock_exclusive(self.0)
+        }
+
+        fn try_lock_shared(&self) -> Result<()> {
+            FileExt::try_lock_shared(self.0)
+        }
+
+        fn try_lock_exclusive(&self) -> Result<()> {
+            FileExt::try_lock_exclusive(self.0)
+        }
+
+        fn unlock(&self) -> Result<()> {
+            FileExt::unlock(self.0)
+        }
+    }
+
+    #[allow(deprecated)]
+    fn assert_exclusive_lock_is_contended(file: &File) {
+        let result = FileExt::try_lock_exclusive(file);
+        assert!(result.is_err());
+    }
+
+    #[allow(deprecated)]
+    fn assert_shared_lock_is_contended(file: &File) {
+        let result = FileExt::try_lock_shared(file);
+        assert!(result.is_err());
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn public_forwarders_execute_in_the_unit_test_binary() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("forwarding");
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let contender = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+
+        let duplicate = FileExt::duplicate(&file).unwrap();
+        assert_eq!(
+            duplicate.metadata().unwrap().len(),
+            file.metadata().unwrap().len()
+        );
+
+        #[cfg(any(
+            target_os = "windows",
+            target_os = "freebsd",
+            target_os = "android",
+            target_os = "emscripten",
+            target_os = "macos",
+            target_os = "ios",
+            all(target_os = "linux", not(target_env = "uclibc")),
+        ))]
+        {
+            FileExt::allocate(&file, 4096).unwrap();
+            assert!(file.metadata().unwrap().len() >= 4096);
+            assert!(FileExt::allocated_size(&file).unwrap() >= 4096);
+        }
+
+        FileExt::fs2_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&file).unwrap();
+        FileExt::fs2_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&file).unwrap();
+        FileExt::fs2_try_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&file).unwrap();
+        FileExt::fs2_try_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&file).unwrap();
+
+        FileExt::lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::unlock(&file).unwrap();
+        FileExt::lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::unlock(&file).unwrap();
+        FileExt::try_lock_shared(&file).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::unlock(&file).unwrap();
+        FileExt::try_lock_exclusive(&file).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::unlock(&file).unwrap();
+
+        let default_forwarders = DefaultForwarders(&file);
+        drop(FileExt::duplicate(&default_forwarders).unwrap());
+        FileExt::allocated_size(&default_forwarders).unwrap();
+        FileExt::allocate(&default_forwarders, 0).unwrap();
+        FileExt::fs2_lock_shared(&default_forwarders).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&default_forwarders).unwrap();
+        FileExt::fs2_lock_exclusive(&default_forwarders).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&default_forwarders).unwrap();
+        FileExt::fs2_try_lock_shared(&default_forwarders).unwrap();
+        assert_exclusive_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&default_forwarders).unwrap();
+        FileExt::fs2_try_lock_exclusive(&default_forwarders).unwrap();
+        assert_shared_lock_is_contended(&contender);
+        FileExt::fs2_unlock(&default_forwarders).unwrap();
+
+        let _ = lock_contended_error();
+
+        let stats = statvfs(path.clone()).unwrap();
+        let free = free_space(path.clone()).unwrap();
+        let available = available_space(path.clone()).unwrap();
+        let total = total_space(path.clone()).unwrap();
+        assert!(free <= total);
+        assert!(available <= total);
+        assert_eq!(
+            allocation_granularity(path).unwrap(),
+            stats.allocation_granularity()
+        );
+    }
 }

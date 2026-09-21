@@ -38,7 +38,7 @@ filesystem requirements:
 - **Correctness and security hardening:** validated filesystem counters, safer
   failure handling, and explicit contracts around locking, allocation, and inheritance.
 - **Targeted performance improvements:** lower latency for selected allocation
-  and filesystem queries including the historical Windows comparisons below. Overall churn reduction and no performance regressions (1% tollerance)
+  and filesystem queries in the scoped historical Windows comparisons below.
 
 [PR #1][evolution] traces the evolution from fs2 v0.4.3 to fs2-turbo v1.0.0,
 including implementation owners, per-API forwarding, OS-specific commits, and

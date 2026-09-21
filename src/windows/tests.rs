@@ -19,6 +19,12 @@ mod lock;
 #[path = "tests/allocation.rs"]
 mod allocation;
 
+#[path = "tests/allocation_control.rs"]
+mod allocation_control;
+
+#[path = "tests/overlapped.rs"]
+mod overlapped;
+
 struct CompletionPort(HANDLE);
 
 impl CompletionPort {
@@ -52,6 +58,25 @@ impl CompletionPort {
         assert!(overlapped.is_null(), "unexpected private completion packet");
         assert_eq!(error.raw_os_error(), Some(WAIT_TIMEOUT as i32));
     }
+}
+
+#[test]
+#[should_panic]
+fn one_file_cannot_be_associated_with_two_completion_ports() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(directory.path().join("completion-port"))
+        .unwrap();
+    let _first = CompletionPort::associate(&file);
+    let _second = CompletionPort::associate(&file);
 }
 
 impl Drop for CompletionPort {

@@ -135,3 +135,26 @@ fn rejects_unsupported_reservation_when_needed() {
         std::io::ErrorKind::Unsupported
     );
 }
+
+#[test]
+fn coverage_shared_snapshot_reserves_nonzero_space() {
+    let file = tempfile::tempfile().unwrap();
+    let state = super::sys::allocation_state(&file);
+    super::allocate_with_state(&file, 16_384, state).unwrap();
+    assert!(file.metadata().unwrap().len() >= 16_384);
+    assert!(crate::FileExt::allocated_size(&file).unwrap() >= 16_384);
+}
+
+#[test]
+fn coverage_shared_snapshot_preserves_a_file_that_has_grown() {
+    let file = tempfile::tempfile().unwrap();
+    crate::FileExt::allocate(&file, 65_536).unwrap();
+    // The physical reservation is real; only the earlier logical-length snapshot
+    // is stale. Rechecking current metadata must not shrink the file.
+    let state = super::AllocationState {
+        allocated_size: crate::FileExt::allocated_size(&file).unwrap(),
+        file_size: 0,
+    };
+    super::allocate_with_state(&file, 4096, Ok(state)).unwrap();
+    assert_eq!(file.metadata().unwrap().len(), 65_536);
+}

@@ -54,19 +54,27 @@ pub(crate) fn allocation_state_result(
 }
 
 fn allocation_state_from_values(allocated_size: i64, file_size: i64) -> Result<AllocationState> {
-    Ok(AllocationState {
-        allocated_size: u64::try_from(allocated_size).map_err(|_| {
-            Error::new(
+    let allocated_size = match u64::try_from(allocated_size) {
+        Ok(size) => size,
+        Err(_) => {
+            return Err(Error::new(
                 ErrorKind::InvalidData,
                 "filesystem returned a negative allocation size",
-            )
-        })?,
-        file_size: u64::try_from(file_size).map_err(|_| {
-            Error::new(
+            ));
+        }
+    };
+    let file_size = match u64::try_from(file_size) {
+        Ok(size) => size,
+        Err(_) => {
+            return Err(Error::new(
                 ErrorKind::InvalidData,
                 "filesystem returned a negative file size",
-            )
-        })?,
+            ));
+        }
+    };
+    Ok(AllocationState {
+        allocated_size,
+        file_size,
     })
 }
 
@@ -75,7 +83,26 @@ pub(crate) fn allocate(file: &File, len: u64) -> Result<()> {
         return Ok(());
     }
 
-    let (attributes, state) = file_attributes_and_state(file)?;
+    allocate_with_attributes_result(file, len, file_attributes_and_state(file))
+}
+
+#[inline(always)]
+fn allocate_with_attributes_result(
+    file: &File,
+    len: u64,
+    attributes_and_state: Result<(u32, AllocationState)>,
+) -> Result<()> {
+    let (attributes, state) = attributes_and_state?;
+    allocate_with_attributes(file, len, attributes, state)
+}
+
+#[inline]
+pub(crate) fn allocate_with_attributes(
+    file: &File,
+    len: u64,
+    attributes: u32,
+    state: AllocationState,
+) -> Result<()> {
     if attributes
         & (FILE_ATTRIBUTE_OFFLINE
             | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
@@ -145,13 +172,26 @@ fn allocate_sparse_space(file: &File, len: u64) -> Result<()> {
     i64::try_from(len)
         .map_err(|_| Error::new(ErrorKind::InvalidInput, "allocation length is too large"))?;
     extend_file_length(file, len)?;
-    if requested_range_is_allocated(file, len)? {
+    reserve_sparse_range_with(
+        || requested_range_is_allocated(file, len),
+        || clear_sparse_file(file),
+        || set_sparse_file(file, true),
+    )
+}
+
+#[inline]
+pub(crate) fn reserve_sparse_range_with(
+    mut query: impl FnMut() -> Result<bool>,
+    clear: impl FnOnce() -> Result<()>,
+    restore: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if query()? {
         return Ok(());
     }
 
-    clear_sparse_file(file)?;
-    set_sparse_file(file, true)?;
-    if requested_range_is_allocated(file, len)? {
+    clear()?;
+    restore()?;
+    if query()? {
         Ok(())
     } else {
         Err(Error::new(
@@ -162,7 +202,12 @@ fn allocate_sparse_space(file: &File, len: u64) -> Result<()> {
 }
 
 fn clear_sparse_file(file: &File) -> Result<()> {
-    match set_sparse_file(file, false) {
+    sparse_clear_result(set_sparse_file(file, false))
+}
+
+#[inline]
+pub(crate) fn sparse_clear_result(result: Result<()>) -> Result<()> {
+    match result {
         Err(error)
             if matches!(
                 error.raw_os_error(),
@@ -204,7 +249,12 @@ pub(crate) fn allocation_target(state: AllocationState, len: u64) -> u64 {
 }
 
 fn extend_file_length(file: &File, len: u64) -> Result<()> {
-    if file.metadata()?.len() < len {
+    extend_file_length_with(file, len, file.metadata().map(|metadata| metadata.len()))
+}
+
+#[inline]
+pub(crate) fn extend_file_length_with(file: &File, len: u64, length: Result<u64>) -> Result<()> {
+    if length? < len {
         file.set_len(len)
     } else {
         Ok(())
@@ -222,14 +272,44 @@ fn file_attributes_and_state(file: &File) -> Result<(u32, AllocationState)> {
             std::mem::size_of::<FILE_BASIC_INFO>() as u32,
         )
     };
+    file_attributes_result(result, info.FileAttributes, || allocation_state(file))
+}
+
+#[inline]
+pub(crate) fn file_attributes_result(
+    result: i32,
+    attributes: u32,
+    state: impl FnOnce() -> Result<AllocationState>,
+) -> Result<(u32, AllocationState)> {
     win32_bool_result(result)?;
-    if info.FileAttributes == 0 {
+    if attributes == 0 {
         return Err(Error::new(
             ErrorKind::InvalidData,
             "filesystem returned no file attributes",
         ));
     }
-    Ok((info.FileAttributes, allocation_state(file)?))
+    Ok((attributes, state()?))
+}
+
+#[cfg(test)]
+mod tests;
+
+pub(crate) type DeviceControlResult = std::result::Result<u32, (Error, u32)>;
+
+#[cfg(test)]
+#[path = "allocation/coverage_gaps.rs"]
+mod coverage_gaps;
+
+#[inline]
+fn with_device_control_event(
+    event: Result<PrivateOverlapped>,
+    submit: impl FnOnce(&mut PrivateOverlapped) -> DeviceControlResult,
+) -> DeviceControlResult {
+    let mut overlapped = match event {
+        Ok(overlapped) => overlapped,
+        Err(error) => return Err((error, 0)),
+    };
+    submit(&mut overlapped)
 }
 
 unsafe fn overlapped_device_io_control(
@@ -239,37 +319,32 @@ unsafe fn overlapped_device_io_control(
     input_len: u32,
     output: *mut std::ffi::c_void,
     output_len: u32,
-) -> std::result::Result<u32, (Error, u32)> {
-    let mut overlapped = PrivateOverlapped::new().map_err(|error| (error, 0))?;
-    let mut returned = 0;
-    let result = unsafe {
-        // SAFETY: the caller keeps both buffers valid until this helper returns,
-        // and `overlapped` and its event remain alive through native completion.
-        DeviceIoControl(
-            file.as_raw_handle(),
-            control_code,
-            input,
-            input_len,
-            output,
-            output_len,
-            &mut returned,
-            overlapped.state_mut(),
-        )
-    };
-    if result != 0 {
-        return Ok(returned);
-    }
+) -> DeviceControlResult {
+    with_device_control_event(PrivateOverlapped::new(), |overlapped| {
+        let mut returned = 0;
+        let result = unsafe {
+            // SAFETY: the caller keeps both buffers valid until this helper returns,
+            // and `overlapped` and its event remain alive through native completion.
+            DeviceIoControl(
+                file.as_raw_handle(),
+                control_code,
+                input,
+                input_len,
+                output,
+                output_len,
+                &mut returned,
+                overlapped.state_mut(),
+            )
+        };
+        let submitted = device_control_result(result, returned);
+        complete_device_control(submitted, |returned| {
+            wait_for_device_control(file, overlapped, returned)
+        })
+    })
+}
 
-    let error = Error::last_os_error();
-    if error.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
-        return Err((error, returned));
-    }
-
-    let result = unsafe {
-        // SAFETY: the file, OVERLAPPED state, event, and caller-owned buffers
-        // remain valid while this waits for the pending operation to complete.
-        GetOverlappedResult(file.as_raw_handle(), overlapped.state(), &mut returned, 1)
-    };
+#[inline]
+pub(crate) fn device_control_result(result: i32, returned: u32) -> DeviceControlResult {
     if result == 0 {
         Err((Error::last_os_error(), returned))
     } else {
@@ -277,12 +352,45 @@ unsafe fn overlapped_device_io_control(
     }
 }
 
+#[inline]
+pub(crate) fn complete_device_control(
+    submitted: DeviceControlResult,
+    complete: impl FnOnce(u32) -> DeviceControlResult,
+) -> DeviceControlResult {
+    match submitted {
+        Err((error, returned)) if error.raw_os_error() == Some(ERROR_IO_PENDING as i32) => {
+            complete(returned)
+        }
+        result => result,
+    }
+}
+
+pub(crate) fn wait_for_device_control(
+    file: &File,
+    overlapped: &PrivateOverlapped,
+    mut returned: u32,
+) -> DeviceControlResult {
+    let result = unsafe {
+        // SAFETY: the file, OVERLAPPED state, event, and caller-owned buffers
+        // remain valid while this waits for the pending operation to complete.
+        GetOverlappedResult(file.as_raw_handle(), overlapped.state(), &mut returned, 1)
+    };
+    device_control_result(result, returned)
+}
+
 pub(crate) fn requested_range_is_allocated(file: &File, len: u64) -> Result<bool> {
     if len == 0 {
         return Ok(true);
     }
-    let len = i64::try_from(len)
-        .map_err(|_| Error::new(ErrorKind::InvalidInput, "allocation length is too large"))?;
+    let len = match i64::try_from(len) {
+        Ok(len) => len,
+        Err(_) => {
+            return Err(Error::new(
+                ErrorKind::InvalidInput,
+                "allocation length is too large",
+            ));
+        }
+    };
     let query = FILE_ALLOCATED_RANGE_BUFFER {
         FileOffset: 0,
         Length: len,
@@ -300,6 +408,15 @@ pub(crate) fn requested_range_is_allocated(file: &File, len: u64) -> Result<bool
             std::mem::size_of::<FILE_ALLOCATED_RANGE_BUFFER>() as u32,
         )
     };
+    allocated_range_result(result, range, len)
+}
+
+#[inline]
+pub(crate) fn allocated_range_result(
+    result: DeviceControlResult,
+    range: FILE_ALLOCATED_RANGE_BUFFER,
+    len: i64,
+) -> Result<bool> {
     let returned = match result {
         Ok(returned) => returned,
         Err((error, returned)) if error.raw_os_error() == Some(ERROR_MORE_DATA as i32) => returned,

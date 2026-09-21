@@ -210,3 +210,32 @@ fn owns_only_valid_windows_handles() {
     let handle = file.into_raw_handle();
     assert_eq!(with_owned_handle(handle, |_| 7_u8), Some(7));
 }
+
+#[test]
+fn legacy_byte_space_rejects_available_above_physical_free() {
+    assert_eq!(
+        byte_space_result(1, 8, 10, 7).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn legacy_byte_space_accepts_inclusive_available_bounds() {
+    for (caller_available, caller_total, actual_free) in [
+        (0, 0, 0),
+        (8, 8, 9),
+        (8, 9, 8),
+        (8, 8, 8),
+        (u64::MAX, u64::MAX, u64::MAX),
+    ] {
+        let bytes = byte_space_result(1, caller_available, caller_total, actual_free).unwrap();
+        assert_eq!(
+            (
+                bytes.caller_available,
+                bytes.caller_total,
+                bytes.actual_free
+            ),
+            (caller_available, caller_total, actual_free)
+        );
+    }
+}
