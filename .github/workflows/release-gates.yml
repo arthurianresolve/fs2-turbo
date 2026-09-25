@@ -1,0 +1,175 @@
+name: Release gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gates-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  toolchains:
+    name: Rust ${{ matrix.rust }}
+    needs: [library, tooling]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.88.0", "1.98.1"]
+    env:
+      LIBRARY_JOB_RESULT: ${{ needs.library.result }}
+      TOOLING_JOB_RESULT: ${{ needs.tooling.result }}
+    steps:
+      - name: Require both package validation matrices
+        run: node -e 'if (process.env.LIBRARY_JOB_RESULT !== "success" || process.env.TOOLING_JOB_RESULT !== "success") { throw new Error("Library and fs2-dev validation must both pass"); }'
+
+  library:
+    name: fs2 library / Rust ${{ matrix.rust }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.88.0", "1.98.1"]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - name: Check formatting
+        run: cargo fmt --package fs2-turbo -- --check
+      - name: Check library targets
+        run: cargo check --package fs2-turbo --all-targets --locked
+      - name: Test library
+        run: cargo test --package fs2-turbo --locked
+      - name: Run strict Clippy
+        run: cargo clippy --package fs2-turbo --all-targets --locked -- -D warnings
+      - name: Build documentation
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --package fs2-turbo --lib --no-deps --locked
+      - name: Fetch locked compatibility dependencies
+        run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
+      - name: Compile compatibility fixtures
+        run: cargo xtask compatibility
+      - name: Check future incompatibilities
+        if: matrix.rust == '1.98.1'
+        run: cargo check --package fs2-turbo --all-targets --locked --future-incompat-report
+
+  tooling:
+    name: fs2-dev / Rust ${{ matrix.rust }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        rust: ["1.88.0", "1.98.1"]
+    env:
+      RUSTUP_TOOLCHAIN: ${{ matrix.rust }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+      - name: Check tooling formatting
+        run: cargo fmt --package fs2-dev -- --check
+      - name: Check tooling targets
+        run: cargo check --package fs2-dev --all-targets --locked
+      - name: Fetch locked compatibility dependencies for offline tests
+        run: cargo fetch --manifest-path compatibility/Cargo.toml --locked
+      - name: Test tooling
+        run: cargo test --package fs2-dev --locked
+      - name: Run strict tooling Clippy
+        run: cargo clippy --package fs2-dev --all-targets --locked -- -D warnings
+      - name: Validate support metadata
+        run: cargo xtask matrix
+      - name: Reject host-specific paths in tracked evidence
+        shell: bash
+        run: |
+          set +e
+          git grep -n -E '[A-Za-z]:\\Users\\[^\\[:space:]]+|/(Users|home)/[^/[:space:]]+' -- 'artifacts/**'
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "tracked evidence contains a host-specific user-profile path" >&2
+            exit 1
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "host-path evidence scan failed with exit code $status" >&2
+            exit "$status"
+          fi
+      - name: Check future incompatibilities
+        if: matrix.rust == '1.98.1'
+        run: cargo check --package fs2-dev --all-targets --locked --future-incompat-report
+
+  package:
+    name: Published package
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install MSRV
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: List package contents
+        run: |
+          cargo package --locked --list > "$RUNNER_TEMP/package-files.txt"
+          cat "$RUNNER_TEMP/package-files.txt"
+      - name: Reject repository-only files
+        run: |
+          set +e
+          grep -E '^(artifacts|compatibility|tools|\.cargo|\.github)/|^(deny\.toml|support-matrix\.json|CONTEXT\.md)$' "$RUNNER_TEMP/package-files.txt"
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "repository-only files entered the fs2 package" >&2
+            exit 1
+          fi
+          if [ "$status" -ne 1 ]; then
+            echo "package-content scan failed with exit code $status" >&2
+            exit "$status"
+          fi
+      - name: Build package
+        run: cargo package --locked
+
+  dependencies:
+    name: Dependency policy and vulnerabilities
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: "1.98.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-deny@0.20.2
+          fallback: none
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+      - name: Check dependency policy
+        run: cargo deny check
+      - name: Audit vulnerabilities
+        run: cargo audit

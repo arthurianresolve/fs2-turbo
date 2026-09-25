@@ -1,0 +1,156 @@
+name: MSRV coverage evidence
+
+"on":
+  push:
+    branches: [dev, "1.0.0"]
+  pull_request:
+    branches: [dev, "1.0.0"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: msrv-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage-msrv:
+    name: Coverage / ${{ matrix.target }} / Rust 1.88.0
+    if: >-
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
+      contains(fromJSON('["dev","1.0.0"]'), github.base_ref || github.ref_name)
+    timeout-minutes: 25
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTUP_TOOLCHAIN: "1.88.0"
+      COVERAGE_TOOLCHAIN: "1.88.0"
+      COVERAGE_TARGET: ${{ matrix.target }}
+      COVERAGE_RUNNER_LABEL: ${{ matrix.os }}
+      CARGO_INCREMENTAL: "0"
+      CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-combined-${{ matrix.target }}
+      FS2_COVERAGE_REQUIRE_NATIVE_FIXTURES: "1"
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: windows-2025-vs2026, target: x86_64-pc-windows-msvc }
+          - { os: macos-26, target: aarch64-apple-darwin }
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
+        with:
+          toolchain: "1.88.0"
+          components: llvm-tools-preview
+          targets: ${{ matrix.target }}
+      - uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-llvm-cov@0.8.7
+          fallback: none
+      - name: Record exact evidence provenance
+        shell: bash
+        run: bash .github/scripts/coverage-provenance.sh record "coverage-msrv-${{ matrix.target }}"
+      - name: Measure combined native coverage
+        run: cargo llvm-cov --package fs2-turbo --lib --tests --target "${{ matrix.target }}" --locked --remap-path-prefix --lcov --output-path "coverage-msrv-${{ matrix.target }}.lcov" -- --test-threads=1
+      - name: Export combined coverage JSON
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-msrv-${{ matrix.target }}.json"
+      - name: Export combined instantiation diagnostics
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-msrv-${{ matrix.target }}.txt"
+      - name: Measure unit-only instantiation diagnostics
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-unit-${{ matrix.target }}
+        run: cargo llvm-cov --package fs2-turbo --lib --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-msrv-unit-${{ matrix.target }}.json" -- --test-threads=1
+      - name: Export unit-only coverage instantiations
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-unit-${{ matrix.target }}
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-msrv-unit-${{ matrix.target }}.txt"
+      - name: Measure integration-only instantiation diagnostics
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-integration-${{ matrix.target }}
+        run: cargo llvm-cov --package fs2-turbo --test integration --target "${{ matrix.target }}" --locked --remap-path-prefix --json --output-path "coverage-msrv-integration-${{ matrix.target }}.json" -- --test-threads=1
+      - name: Export integration-only coverage instantiations
+        env:
+          CARGO_LLVM_COV_TARGET_DIR: target/llvm-cov-msrv-integration-${{ matrix.target }}
+        run: cargo llvm-cov report --package fs2-turbo --target "${{ matrix.target }}" --locked --remap-path-prefix --text --show-instantiations --output-path "coverage-msrv-integration-${{ matrix.target }}.txt"
+      - name: Enforce native coverage policy
+        run: >-
+          cargo xtask coverage
+          --target "${{ matrix.target }}"
+          --json "coverage-msrv-${{ matrix.target }}.json"
+          --lcov "coverage-msrv-${{ matrix.target }}.lcov"
+          --unit-json "coverage-msrv-unit-${{ matrix.target }}.json"
+          --integration-json "coverage-msrv-integration-${{ matrix.target }}.json"
+          --diagnostics-json "coverage-msrv-diagnostics-${{ matrix.target }}.json"
+      - name: Verify source identity after measurement
+        if: always()
+        shell: bash
+        run: bash .github/scripts/coverage-provenance.sh verify "coverage-msrv-${{ matrix.target }}"
+      - name: Seal complete MSRV evidence
+        run: node .github/scripts/coverage-audit.cjs seal msrv "${{ matrix.target }}"
+      - name: Upload exact-SHA MSRV evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: coverage-msrv-${{ matrix.target }}-attempt-${{ github.run_attempt }}
+          path: |
+            coverage-msrv-${{ matrix.target }}.lcov
+            coverage-msrv-${{ matrix.target }}.json
+            coverage-msrv-${{ matrix.target }}.txt
+            coverage-msrv-unit-${{ matrix.target }}.json
+            coverage-msrv-unit-${{ matrix.target }}.txt
+            coverage-msrv-integration-${{ matrix.target }}.json
+            coverage-msrv-integration-${{ matrix.target }}.txt
+            coverage-msrv-diagnostics-${{ matrix.target }}.json
+            coverage-msrv-${{ matrix.target }}-provenance.txt
+            coverage-msrv-${{ matrix.target }}-source.sha256
+            coverage-msrv-${{ matrix.target }}-receipt.json
+          if-no-files-found: error
+          retention-days: 14
+
+  complete-msrv-evidence:
+    name: Complete MSRV coverage evidence
+    needs: coverage-msrv
+    if: >-
+      always() &&
+      github.repository == 'arthurianresolve/fs2-turbo' &&
+      (github.event_name == 'pull_request' || github.ref_type == 'branch') &&
+      contains(fromJSON('["dev","1.0.0"]'), github.base_ref || github.ref_name)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      COVERAGE_JOB_RESULT: ${{ needs.coverage-msrv.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-msrv-x86_64-unknown-linux-gnu-attempt-${{ github.run_attempt }}
+          path: target/coverage-inputs/coverage-msrv-x86_64-unknown-linux-gnu
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-msrv-x86_64-pc-windows-msvc-attempt-${{ github.run_attempt }}
+          path: target/coverage-inputs/coverage-msrv-x86_64-pc-windows-msvc
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: coverage-msrv-aarch64-apple-darwin-attempt-${{ github.run_attempt }}
+          path: target/coverage-inputs/coverage-msrv-aarch64-apple-darwin
+      - name: Validate coverage evidence
+        if: ${{ !cancelled() }}
+        id: audit
+        run: node .github/scripts/coverage-audit.cjs collect msrv target/coverage-inputs
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() && steps.audit.outputs.report_directory != '' }}
+        with:
+          name: msrv-coverage-summary-attempt-${{ github.run_attempt }}
+          path: ${{ steps.audit.outputs.report_directory }}
+          if-no-files-found: error
+          retention-days: 14

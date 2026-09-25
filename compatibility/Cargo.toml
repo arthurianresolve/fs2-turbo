@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "edition-2015",
+    "edition-2018",
+    "edition-2021",
+    "edition-2024",
+]
+resolver = "3"

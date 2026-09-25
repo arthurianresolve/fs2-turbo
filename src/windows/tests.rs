@@ -1,0 +1,89 @@
+use std::fs::File;
+use std::io::Error;
+use std::os::windows::io::AsRawHandle;
+
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, WAIT_TIMEOUT};
+use windows_sys::Win32::System::IO::{
+    CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED,
+};
+
+#[cfg(test)]
+#[path = "tests/stats/mod.rs"]
+mod stats;
+
+#[cfg(test)]
+#[path = "tests/lock.rs"]
+mod lock;
+
+#[cfg(test)]
+#[path = "tests/allocation.rs"]
+mod allocation;
+
+#[path = "tests/allocation_control.rs"]
+mod allocation_control;
+
+#[path = "tests/overlapped.rs"]
+mod overlapped;
+
+struct CompletionPort(HANDLE);
+
+impl CompletionPort {
+    fn associate(file: &File) -> Self {
+        let handle = unsafe {
+            // SAFETY: `file` owns an overlapped-capable handle, and null asks
+            // Windows to create a new completion port for that handle.
+            CreateIoCompletionPort(file.as_raw_handle(), std::ptr::null_mut(), 0, 1)
+        };
+        assert!(!handle.is_null(), "{}", Error::last_os_error());
+        Self(handle)
+    }
+
+    fn assert_empty(&self) {
+        let mut bytes_transferred = 0;
+        let mut completion_key = 0;
+        let mut overlapped: *mut OVERLAPPED = std::ptr::null_mut();
+        let result = unsafe {
+            // SAFETY: all output pointers are valid for the call, and this
+            // value owns a live completion-port handle.
+            GetQueuedCompletionStatus(
+                self.0,
+                &mut bytes_transferred,
+                &mut completion_key,
+                &mut overlapped,
+                100,
+            )
+        };
+        let error = Error::last_os_error();
+        assert_eq!(result, 0, "unexpected private completion packet");
+        assert!(overlapped.is_null(), "unexpected private completion packet");
+        assert_eq!(error.raw_os_error(), Some(WAIT_TIMEOUT as i32));
+    }
+}
+
+#[test]
+#[should_panic]
+fn one_file_cannot_be_associated_with_two_completion_ports() {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
+
+    let directory = tempfile::tempdir().unwrap();
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .custom_flags(FILE_FLAG_OVERLAPPED)
+        .open(directory.path().join("completion-port"))
+        .unwrap();
+    let _first = CompletionPort::associate(&file);
+    let _second = CompletionPort::associate(&file);
+}
+
+impl Drop for CompletionPort {
+    fn drop(&mut self) {
+        unsafe {
+            // SAFETY: this value exclusively owns the completion-port handle.
+            CloseHandle(self.0);
+        }
+    }
+}

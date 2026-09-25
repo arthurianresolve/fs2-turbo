@@ -1,0 +1,12 @@
+# Keep mutation testing focused on deterministic, platform-neutral library logic.
+additional_cargo_args = ["--locked"]
+test_workspace = false
+# Removing unlock makes blocking lock-contract tests hang by construction.
+exclude_re = ["replace .*::(fs2_)?unlock -> Result"]
+examine_globs = [
+    "src/allocation.rs",
+    "src/lib.rs",
+    "src/stats/counters.rs",
+    "src/stats/snapshot.rs",
+    "src/stats/validation.rs",
+]
